@@ -108,6 +108,7 @@ def train():
 
         loss = outputs.loss
         loss.backward()
+        model.clip_grad_norm_(1.0)  # FSDP-aware clipping — prevents FP16 overflow
         optimizer.step()
 
         tracker.update(input_ids.shape[0] * world_size)
