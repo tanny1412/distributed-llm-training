@@ -25,8 +25,9 @@ def train():
         MODEL_ID,
         torch_dtype=torch.float16,
         device_map="cuda",
+        use_cache=False,
     )
-    # NOTE: no gradient checkpointing here — this will OOM on first backward
+    model.gradient_checkpointing_enable()
 
     dataset = AlpacaDataset(tokenizer, max_length=MAX_LENGTH)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
@@ -36,13 +37,13 @@ def train():
     tracker = ThroughputTracker()
 
     mlflow.set_experiment("distributed-training")
-    with mlflow.start_run(run_name="single-gpu-no-checkpointing"):
+    with mlflow.start_run(run_name="single-gpu"):
         mlflow.log_params({
             "model": MODEL_ID,
             "batch_size": BATCH_SIZE,
             "max_length": MAX_LENGTH,
             "lr": LR,
-            "gradient_checkpointing": False,
+            "gradient_checkpointing": True,
         })
 
         model.train()
