@@ -54,12 +54,96 @@ Padding needs two guards:
 
 ## Concepts to Know Cold
 
+### GPU memory hierarchy — how data actually moves
+All GPU compute involves HBM ↔ SRAM movement. Always. When any operation runs:
+```
+HBM → SRAM   read data (weights, activations, inputs)
+compute in SRAM   (fast, on-chip)
+SRAM → HBM   write result back
+```
+
+For training specifically:
+```
+forward:   HBM → SRAM (read weights + input) → compute activation → SRAM → HBM (save activation)
+backward:  HBM → SRAM (read activation back) + HBM → SRAM (read weights) → compute gradient → SRAM → HBM (write gradient)
+```
+
+Two types of bottleneck — same hardware, different problem:
+- **Bandwidth bottleneck** — too much data movement per step. Classic example: KV cache in attention — each new token reads ALL previous K,V pairs from HBM, tiny compute per byte moved.
+- **Capacity bottleneck** — too much data sitting in HBM at once. Training OOM — activations + gradients + weights all in HBM simultaneously = 40GB > 24GB.
+
+OOM is a capacity problem, not a bandwidth problem.
+
+### HBM vs SRAM — always say HBM
+- **HBM** (High Bandwidth Memory) — the large memory on the GPU die. This is what nvidia-smi shows. This is what OOMs. Model weights, activations, gradients, optimizer states all live here.
+- **SRAM** — tiny on-chip cache inside the GPU (L1/L2). Not where model weights live. Do not confuse with HBM.
+
+Always say HBM when talking about GPU memory in interviews. It signals you know the hardware.
+
+### Enabling gradient checkpointing — two lines
+```python
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_ID,
+    torch_dtype=torch.float16,
+    device_map="cuda",
+    use_cache=False,   # required — conflicts with gradient checkpointing
+)
+model.gradient_checkpointing_enable()
+```
+
+Why `use_cache=False`: KV cache saves attention states to speed up generation. Gradient checkpointing discards intermediate states to save HBM. They conflict — both trying to control what stays in HBM. During training you don't need KV cache anyway (you're not generating token by token). Disable it.
+
+Story arc for Stage 1:
+1. Run without gradient checkpointing → OOM on backward (commit this first)
+2. Add these two lines → fits → record samples/sec, peak HBM, batch size
+
+### Why single GPU OOMs on backward (the story)
+```
+forward pass  → activations saved to HBM (~8GB depending on batch)
+backward pass → gradients computed using those activations
+              → gradients same size as weights = 16GB
+              → total: 16GB weights + 8GB activations + 16GB gradients = 40GB
+              → A10G has 24GB HBM → OOM
+```
+And that's before optimizer states (another 32GB for AdamW). Model loads fine — it's the backward pass that kills it.
+
+Interview line: "The model loaded fine — 16GB fits in 24GB HBM. But the backward pass needs to hold activations AND gradients simultaneously. That pushes us well past 24GB. OOM on first backward, exactly as expected."
+
 ### Memory breakdown on a single GPU (why 8GB headroom isn't enough)
 - Model weights (FP16): 16GB
 - Gradients: ~16GB (same size as weights)
 - Optimizer states (AdamW — momentum + variance per param): ~32GB
 - Activations: variable, depends on batch size and sequence length
 - Total: well over 24GB without tricks
+
+### Gradient checkpointing — how it actually works
+Not all activations discarded — checkpoints are strategically kept as anchors:
+
+```
+layer 1 → activation saved (checkpoint) ✓
+layer 2 → activation discarded
+layer 3 → activation discarded
+layer 4 → activation saved (checkpoint) ✓
+layer 5 → activation discarded
+...
+```
+
+During backward, when it needs layer 2's activation:
+- Finds nearest checkpoint before it (layer 1)
+- Reruns forward from layer 1 → layer 2 (small segment, not whole model)
+- Gets activation → computes gradient → discards activation
+
+Checkpoints = anchors/starting points for recomputation segments. Not hints, not approximations — full recomputation of a segment.
+
+Memory: only checkpoint activations stay in HBM — O(√layers) instead of O(layers)
+Compute: ~30% extra — segments of forward pass rerun during backward
+
+Checkpoints are per-step, not persistent:
+```
+step 1: forward → checkpoints created → backward → checkpoints released → optimizer step
+step 2: forward → new checkpoints created → backward → released → optimizer step
+```
+Fresh set every step. HBM only holds one step's worth of checkpoints at a time. After backward, gradients written to HBM, checkpoints released. After optimizer.step(), gradients released. Only weights remain before next step.
 
 ### Gradient checkpointing
 Discards activations after the forward pass, recomputes them during backprop.
@@ -76,6 +160,20 @@ Each GPU sees a different data shard and computes different gradients. If they u
 ### DDP vs FSDP
 - DDP: full model on every GPU. Gradient all-reduce after backward. 16GB/rank. Needs gradient checkpointing.
 - FSDP: shards weights + gradients + optimizer states. Each GPU holds ~4GB. No checkpointing needed. Larger batch possible.
+
+### device_map="cuda" vs model.to("cuda")
+`model.to("cuda")` loads weights into CPU RAM first, then copies to GPU. For 16GB model = 16GB CPU RAM + 16GB GPU VRAM occupied simultaneously = 32GB CPU RAM needed during transfer.
+
+`device_map="cuda"` streams weights directly onto GPU during loading. CPU RAM never accumulates the full model. Right way to load large models.
+
+Interview line: "`device_map='cuda'` loads weights directly to GPU. `model.to('cuda')` loads to CPU first then copies — you need double the memory during transfer. For a 16GB model that's 16GB of CPU RAM you don't want to waste."
+
+### Why tokenizer.pad_token = tokenizer.eos_token
+Llama is a generative model — never needed to pad sequences during pretraining. So its tokenizer has BOS and EOS but no PAD token. We need padding to batch sequences to the same length. Fix: reuse EOS as the pad token. Safe because attention_mask=0 and labels=-100 both neutralize padding positions — the model never actually uses those tokens.
+
+Must be set BEFORE passing tokenizer to AlpacaDataset. Python passes objects by reference — same tokenizer object inside the dataset. Set it late and the dataset has the same broken tokenizer.
+
+Interview line: "Llama has no dedicated pad token — it's a generative model, never needed one. We reuse EOS. The model never sees those positions anyway because attention mask and labels both zero them out."
 
 ### Small details that matter in interviews
 - `batch['input_ids'].shape[0]` not hardcoded batch_size — last batch of an epoch may be smaller if dataset doesn't divide evenly. `.shape[0]` gives real count every time. Hardcoding would overcount.
@@ -128,6 +226,18 @@ Different models, different inputs:
 - ViT image classification: `pixel_values`, `labels` (no input_ids — images not text)
 - Whisper speech-to-text: `input_features`, `labels` (mel spectrogram in, transcript out)
 - Llama instruction tuning: `input_ids`, `attention_mask`, `labels` (per-token, -100 masked)
+
+### Dataset + DataLoader pattern — always the same
+```
+Dataset.__init__()     → gets everything ready (load files, format strings, store metadata)
+Dataset.__getitem__()  → called by DataLoader on demand, one example at a time
+DataLoader             → orchestrates when and how __getitem__ is called
+```
+`__init__` = prepare. `__getitem__` = serve. `DataLoader` = the one who asks.
+
+Tokenization is lazy — happens in `__getitem__`, not `__init__`. If you tokenized all 52k at init you'd consume huge memory before training even starts. `__init__` only formats strings and stores them. DataLoader triggers `__getitem__` per batch during the training loop.
+
+Every dataset you write follows this pattern. Only the contents change.
 
 ### alpaca.py — what the file does end to end
 Takes raw Alpaca JSON → formats into instruction/response string → tokenizes → masks instruction + padding in labels → returns three tensors per example. DataLoader stacks N examples into [batch_size, 512]. That batch goes directly into the model. File is never touched again after this.
