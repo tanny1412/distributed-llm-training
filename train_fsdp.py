@@ -36,7 +36,7 @@ def train():
     # load on CPU first — FSDP will shard and distribute to GPUs
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         use_cache=False,
     )
     # use_reentrant=False required for FSDP compatibility
@@ -53,9 +53,9 @@ def train():
 
     # mixed precision — compute in FP16, keep master weights in FP32
     mixed_precision = MixedPrecision(
-        param_dtype=torch.float16,
-        reduce_dtype=torch.float16,
-        buffer_dtype=torch.float16,
+        param_dtype=torch.bfloat16,
+        reduce_dtype=torch.bfloat16,  # BF16 all-reduce is stable — no overflow risk
+        buffer_dtype=torch.bfloat16,
     )
 
     model = FSDP(
