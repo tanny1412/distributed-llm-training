@@ -37,8 +37,10 @@ def train():
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
         torch_dtype=torch.float16,
+        use_cache=False,
     )
-    # no gradient_checkpointing_enable() — FSDP drops memory to ~4GB/rank, not needed
+    # use_reentrant=False required for FSDP compatibility
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
     # detect actual decoder layer class at runtime — avoids transformers version mismatches
     decoder_layer_cls = type(model.model.layers[0])
@@ -82,7 +84,7 @@ def train():
             "max_length": MAX_LENGTH,
             "lr": LR,
             "backend": "fsdp",
-            "gradient_checkpointing": False,
+            "gradient_checkpointing": True,
         })
 
     model.train()
