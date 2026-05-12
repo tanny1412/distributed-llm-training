@@ -6,7 +6,6 @@ from torch.distributed.fsdp import ShardingStrategy, MixedPrecision
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 import mlflow
 import functools
 
@@ -15,7 +14,7 @@ from utils.metrics import ThroughputTracker, gpu_memory_mb
 
 MODEL_ID = "meta-llama/Meta-Llama-3-8B"
 MAX_LENGTH = 512
-BATCH_SIZE = 16   # larger batch — FSDP frees HBM, no checkpointing needed
+BATCH_SIZE = 4   # start conservative, increase after confirming FSDP sharding works
 LR = 2e-5
 MAX_STEPS = 200
 LOG_EVERY = 10
@@ -41,10 +40,13 @@ def train():
     )
     # no gradient_checkpointing_enable() — FSDP drops memory to ~4GB/rank, not needed
 
+    # detect actual decoder layer class at runtime — avoids transformers version mismatches
+    decoder_layer_cls = type(model.model.layers[0])
+
     # wrap policy — FSDP shards at the transformer layer boundary
     wrap_policy = functools.partial(
         transformer_auto_wrap_policy,
-        transformer_layer_cls={LlamaDecoderLayer},
+        transformer_layer_cls={decoder_layer_cls},
     )
 
     # mixed precision — compute in FP16, keep master weights in FP32
