@@ -277,6 +277,29 @@ Key: FSDP saves HBM between steps. Tensor parallelism splits the actual computat
 
 Why tensor parallelism needs NVLink: combining partial results happens mid-computation, requires extremely low latency. FSDP's all-gather can tolerate slightly higher latency (happens once per layer, not mid-multiply).
 
+### Mixed precision — simple version
+Two number formats:
+```
+FP32 → 4 bytes per number → precise, slow, more HBM
+FP16 → 2 bytes per number → less precise, fast, less HBM
+```
+
+Mixed precision = FP16 for speed, FP32 where precision matters:
+```
+weights during compute  → FP16  (fast forward/backward)
+weight updates          → FP32  (precise — small gradients don't disappear)
+```
+
+MixedPrecision in FSDP:
+```python
+param_dtype=torch.float16    # store/compute weights in FP16
+reduce_dtype=torch.float16   # communicate gradients in FP16
+buffer_dtype=torch.float16   # everything else in FP16
+```
+
+All FP16 = maximum speed, minimum HBM. Fine for 200 step benchmark.
+Risk: small gradient values underflow to zero in FP16. For production (weeks of training) → use FP32 for reduce_dtype to prevent gradient precision loss during all-reduce.
+
 ### Mixed precision — short version
 FP16 for compute (fast, less HBM). FP32 for master weights (precise, prevents underflow over many steps). Two copies of weights: FP32 master + FP16 working copy. Cast to FP16 before forward, update FP32 master after backward.
 
@@ -304,6 +327,36 @@ FSDP hides this two ways:
 DDP batch=4 (HBM constrained) vs FSDP batch=16 (HBM freed). Whether throughput improves depends on batch gain vs communication overhead. On NVLink — yes. On PCIe — marginal.
 
 Interview answer: "FSDP isn't about raw speed. It's about fitting larger models and enabling larger batches. The memory story is the point." We measure it, we don't claim it.
+
+### auto_wrap_policy vs ShardingStrategy — two different things
+```
+auto_wrap_policy  → WHERE/WHEN to shard (at which module boundaries)
+ShardingStrategy  → WHAT to shard within those boundaries
+```
+
+`transformer_auto_wrap_policy` with `LlamaDecoderLayer` = shard at each decoder layer boundary.
+`ShardingStrategy.FULL_SHARD` = within those boundaries, shard weights + gradients + optimizer states.
+
+Together: each LlamaDecoderLayer has its weights, gradients, and optimizer states all sharded across 4 GPUs.
+
+`FULL_SHARD` without `wrap_policy` = shard everything but as one giant 16GB unit (all-gather full model before forward).
+`wrap_policy` without `FULL_SHARD` = shard at layer boundaries but maybe not everything inside.
+Both needed together for maximum memory savings.
+
+### Why transformer_auto_wrap_policy matters
+Without wrap policy: FSDP treats entire model as one unit → all-gather full 16GB before every forward → defeats the purpose.
+
+With wrap policy at LlamaDecoderLayer boundaries:
+```
+LlamaDecoderLayer(0)  → one FSDP unit, sharded across 4 GPUs
+LlamaDecoderLayer(1)  → one FSDP unit, sharded across 4 GPUs
+...
+LlamaDecoderLayer(31) → one FSDP unit, sharded across 4 GPUs
+```
+Before forward on layer 5 → all-gather only layer 5's weights → compute → discard → move to layer 6.
+Only one layer's weights in HBM at a time, not the whole model.
+
+`functools.partial` pre-bakes `transformer_layer_cls={LlamaDecoderLayer}` so FSDP can call the policy without extra arguments.
 
 ### FSDP wrap policy — why layer boundaries
 FSDP shards at LlamaDecoderLayer boundaries. This is NOT model parallelism:
@@ -534,6 +587,96 @@ Regardless of template, everything ends up in the same three tensors. Template d
 Loss masking rule: everything before `### Response:\n` → `-100`. Always. If instruction + input both exist, both get masked. If only instruction, only that gets masked. One line of code handles both cases — it just finds `### Response:\n` and masks everything before it.
 
 ---
+
+### Memory hierarchy — model lives everywhere
+```
+Disk (SSD)     → permanent storage. Model downloaded here (~16GB). Persists.
+CPU RAM        → transit. from_pretrained() loads model here first. Freed after move to HBM.
+HBM/VRAM       → working memory. Model lives here during training. Where OOMs happen.
+SRAM (on-chip) → compute cache. Tiny chunks brought here for actual math, result written back to HBM.
+```
+
+All four need to be big enough:
+- Not enough disk → can't download model
+- Not enough CPU RAM → can't load model (need ~32GB for 16GB model + buffer)
+- Not enough HBM → OOM during training
+- SRAM is fixed hardware — can't change it, just affects compute speed
+
+On Vast.ai: check GPU count, HBM per GPU, CPU RAM, and disk. All four matter.
+
+### Single node vs multi node — what actually triggers multi-node
+Not the technique — the model size vs hardware capacity.
+
+```
+Single node, single GPU  → model fits on one GPU
+Single node, multi GPU   → DDP, FSDP, even tensor parallelism possible here
+Multi node               → when you need more GPUs than one machine has
+```
+
+Tensor parallelism can run on single node (8× A100 within one machine). Pipeline parallelism becomes necessary when model doesn't fit even across all GPUs on one node.
+
+Real trigger for multi-node: model too big for one node → go multi-node → pipeline parallelism necessary → 3D parallelism for maximum efficiency.
+
+Our project: single node, 4× A10G. 8B model fits with FSDP. No multi-node needed.
+GPT-4 scale: hundreds of nodes → 3D parallelism mandatory.
+
+The line is model size vs hardware capacity, not the technique itself.
+
+## Project Scope — What We Did and Didn't Build
+
+**In scope:**
+- Single GPU baseline
+- PyTorch DDP (data parallelism)
+- PyTorch FSDP / ZeRO-3 (sharded data parallelism)
+- Ray Train (managed DDP)
+
+**Out of scope — and why:**
+Tensor parallelism, pipeline parallelism, 3D parallelism require multi-node NVLink clusters (Megatron-LM, DeepSpeed). Not something you run on 4× A10G. Claiming you did would be a red flag.
+
+Interview answer when asked about tensor/pipeline parallelism:
+> "I didn't implement those — they require multi-node NVLink clusters. I understand how they work conceptually, but my project focused on DDP → FSDP which is what most MLOps roles actually use day to day."
+
+## GPU Setup — How to Connect
+
+### Vast.ai + VS Code Remote SSH
+1. Create Vast.ai account → add credits
+2. Select template: PyTorch (Vast) → set container size to 60GB
+3. Filter: 4x RTX 4090 (24GB VRAM each) — perfect for OOM story
+4. Rent instance → wait for "Running"
+5. Generate SSH key locally if needed: `ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""`
+6. Copy public key: `cat ~/.ssh/id_rsa.pub`
+7. Paste into Vast.ai → Manage SSH Keys → ADD SSH KEY
+8. VS Code → Cmd+Shift+P → "Remote-SSH: Connect to Host" → `ssh -p <port> root@<ip>`
+9. Open terminal → verify: `nvidia-smi`
+
+### Instance details (session 1)
+- 4x RTX 4090, 24564MB HBM each
+- $0.018/hr
+- CUDA 12.6, Driver 560.35.05
+- Connected via: `ssh -p 19722 root@175.155.64.227 -L 8080:localhost:8080`
+
+### Vast.ai tmux behavior — and how to disable it
+Vast.ai auto-attaches every SSH connection (including VS Code Remote terminals) to the same tmux session. Every new terminal tab in VS Code drops into the same tmux — can't use keyboard shortcuts because macOS intercepts them.
+
+Fix: disable auto-tmux permanently:
+```bash
+touch ~/.no_auto_tmux
+```
+Then reconnect. Every SSH session after that is a plain shell.
+
+Workflow after fix: two plain terminal tabs, both SSH'd in. One runs `watch -n 1 nvidia-smi`, other runs experiments. No tmux navigation needed.
+
+Why the `-L 8080:localhost:8080` flag: forwards port 8080 so MLflow UI is accessible at `localhost:8080` in the local browser during experiments.
+
+## GPU Day Process (Day 2)
+1. Rent 4× A10G on Vast.ai
+2. Clone repo, `pip install -r requirements.txt`
+3. Run `train_single.py` → screenshot the OOM
+4. Add checkpointing → run → record numbers
+5. Run `train_ddp.py` at 1, 2, 4 GPUs → record scaling efficiency
+6. Run `train_fsdp.py` → watch memory drop → record numbers
+7. Run `train_ray.py` → compare to DDP
+8. Fill benchmark table in README with real numbers
 
 ## Stages
 
