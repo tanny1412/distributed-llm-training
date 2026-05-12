@@ -8,7 +8,7 @@ from utils.metrics import ThroughputTracker, gpu_memory_mb
 
 MODEL_ID = "meta-llama/Meta-Llama-3-8B"
 MAX_LENGTH = 512
-BATCH_SIZE = 4
+BATCH_SIZE = 2
 LR = 2e-5
 MAX_STEPS = 200
 LOG_EVERY = 10
