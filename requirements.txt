@@ -1,0 +1,15 @@
+# core training
+torch>=2.2.0
+transformers>=4.40.0
+datasets>=2.18.0
+accelerate>=0.29.0
+
+# llama 3 tokenizer dependency
+tiktoken>=0.6.0
+sentencepiece>=0.2.0
+
+# experiment tracking
+mlflow>=2.12.0
+
+# stage 4
+ray[train]>=2.10.0
