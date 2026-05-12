@@ -34,9 +34,11 @@ Total without tricks: well over 24GB. This is the problem each stage solves.
 ## Stages
 
 ### Stage 1 — Single GPU Baseline
-- Llama-3-8B on 1× A10G, FP16
-- Without gradient checkpointing → OOM on first backward (expected)
-- With gradient checkpointing → fits, but small batch size, slow
+- Llama-3-8B on 1× RTX 4090 (24GB), FP16
+- Without gradient checkpointing → OOM during forward pass (activations fill 24GB)
+- With gradient checkpointing + batch_size=1 → still OOM on backward
+- Root cause: 16GB weights + 16GB gradients = 32GB minimum, exceeds 24GB HBM
+- Conclusion: full fine-tuning of 8B on a single 24GB GPU is not feasible without QLoRA/LoRA
 
 ### Stage 2 — PyTorch DDP
 - Full model replicated on all 4 GPUs (~16GB/rank)
@@ -60,7 +62,7 @@ Total without tricks: well over 24GB. This is the problem each stage solves.
 
 | Backend       | GPUs | samples/sec | Scaling eff. | Mem/rank  | Notes                          |
 |---------------|------|-------------|--------------|-----------|--------------------------------|
-| Single GPU    | 1    | —           | 100%         | ~18–20GB  | Grad checkpointing required    |
+| Single GPU    | 1    | OOM         | —            | >24GB     | 16GB weights + 16GB grads > 24GB HBM |
 | DDP           | 2    | —           | —%           | ~18–20GB  | Still needs grad checkpointing |
 | DDP           | 4    | —           | —%           | ~18–20GB  | Target: 80–88% efficiency      |
 | FSDP          | 4    | —           | —%           | ~4–6GB    | No checkpointing, larger batch |

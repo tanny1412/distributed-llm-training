@@ -97,6 +97,16 @@ Story arc for Stage 1:
 1. Run without gradient checkpointing → OOM on backward (commit this first)
 2. Add these two lines → fits → record samples/sec, peak HBM, batch size
 
+### Why batch size affects HBM usage
+More samples in a batch = more activations held in HBM simultaneously during forward.
+
+batch_size=4 → 4 sequences × activations per layer = 4× activation memory in HBM
+batch_size=1 → 1 sequence worth of activations
+
+Gradients are per-parameter, not per-sample — same size regardless of batch size. But activations scale directly with batch size. Even with gradient checkpointing (which reduces activations), the checkpointed activations still scale with batch. 4 sequences × checkpoints was still too much for 24GB.
+
+Real constraint: batch size is limited by how many sequences' activations fit in HBM simultaneously. On a single 24GB GPU with an 8B model and 512-length sequences, batch_size=2 is the ceiling.
+
 ### Why single GPU OOMs on backward (the story)
 ```
 forward pass  → activations saved to HBM (~8GB depending on batch)
@@ -680,11 +690,12 @@ Why the `-L 8080:localhost:8080` flag: forwards port 8080 so MLflow UI is access
 
 ## Stages
 
-### Stage 1 — Single GPU Baseline (current)
-- [ ] Write train_single.py WITHOUT gradient checkpointing (will OOM on GPU — intentional)
-- [ ] Add gradient checkpointing, record samples/sec, peak memory, batch size
-- [ ] Log to MLflow: loss, samples/sec, GPU memory, batch size
-- Dataset: Alpaca (52k instruction-response pairs, response-only loss masking)
+### Stage 1 — Single GPU Baseline (complete)
+- [x] train_single.py WITHOUT gradient checkpointing → OOM during forward pass (activations fill 24GB HBM)
+- [x] Added gradient checkpointing + batch_size=1 → still OOM on backward
+- Root cause: 16GB weights + 16GB gradients = 32GB minimum, exceeds 24GB. Optimizer states add another 32GB.
+- Conclusion: full fine-tuning of 8B on a single 24GB GPU is not feasible. OOM is the story.
+- Screenshot saved: screenshots/stage1_single_gpu_oom.png
 
 ### Stage 2 — PyTorch DDP
 - [ ] train_ddp.py — full model on every rank, torchrun launcher
@@ -701,6 +712,35 @@ Why the `-L 8080:localhost:8080` flag: forwards port 8080 so MLflow UI is access
 - [ ] train_ray.py — same DDP but no manual dist.init_process_group
 - [ ] ray_tune.py — HPO sweep in ~10 lines
 - [ ] Compare setup complexity and throughput vs torchrun
+
+### Checkpointing — how long training jobs survive crashes
+
+Save model + optimizer state to disk periodically. Resume from last checkpoint if process crashes.
+
+```python
+# Save every N steps
+if step % 500 == 0 and rank == 0:
+    torch.save({
+        'step': step,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': loss,
+    }, f'checkpoint_step_{step}.pt')
+
+# Resume
+checkpoint = torch.load('checkpoint_step_500.pt')
+model.load_state_dict(checkpoint['model_state_dict'])
+optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+start_step = checkpoint['step']
+```
+
+Must save optimizer state, not just weights. AdamW has momentum + variance per parameter — if you only save weights, optimizer starts cold and training stutters for hundreds of steps until momentum rebuilds.
+
+At GPT-4 scale (1024 GPUs): checkpoint every few hundred steps to cloud storage (S3). Hardware failures at that scale are expected. A node dies → spin up replacement → load latest checkpoint → continue. Without checkpointing, a failure at step 50,000 means restarting from zero.
+
+FSDP uses `FSDP.state_dict()` not regular `.state_dict()` — weights are sharded across ranks, you need FSDP's API to gather and save them correctly.
+
+Not in our project scope (200 steps = minutes), but know it cold for interviews.
 
 ---
 
