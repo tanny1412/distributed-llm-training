@@ -268,6 +268,16 @@ Results after re-running both versions:
 | single-gpu (checkpointing OFF) | 5.45 | TBD | ~61783MB | TBD |
 | Saved by checkpointing         | —    | —   | —        | TBD |
 
+### Why not Prometheus + Grafana for tracking savings %
+
+Prometheus and Grafana are designed for continuous service monitoring — scrape metrics every N seconds from a long-running service. A training run that completes in 2 minutes doesn't fit that model. Adding them here would be infrastructure for show, not because the problem requires it. Interviewers notice the difference.
+
+MLflow is the right tool: it's built for experiment tracking and run comparison. After both runs complete, select both in the MLflow UI → Compare → plots `peak_memory_mb` side by side. Savings % computed from those two numbers.
+
+If this were a production training job running continuously (days, weeks), Prometheus makes sense — scrape GPU utilization, memory pressure, throughput in real time, alert when something degrades. For a discrete benchmark, MLflow handles it completely.
+
+Interview line if asked: "We used MLflow for experiment tracking and compared runs in the UI. Prometheus/Grafana would make sense for a long-running production job where you need real-time alerting — for a benchmark with discrete runs, MLflow is the right fit."
+
 ### Why peak memory is the number that matters for GPU sizing
 
 `steady_memory_mb` tells you what HBM the run uses between steps — weights + gradients + optimizer states. `peak_memory_mb` tells you the maximum HBM needed at any single moment during the run — the forward+backward window where activations are also in HBM.
