@@ -94,12 +94,16 @@ efficiency = (N_gpu_throughput / (N × single_gpu_throughput)) × 100%
 
 1 GPU DDP skipped — identical to single GPU baseline. Single GPU result from Stage 1 is the baseline.
 
-Baseline: 6.25 samples/sec (single GPU, ckpt ON, RTX PRO 6000)
+Baseline: 6.25 samples/sec (measured, single GPU, ckpt ON, RTX PRO 6000) — theoretical max is our own measured baseline, not spec sheet numbers.
+
+4 GPUs must process 4 × 6.25 = 25 samples/sec if all they did was compute. But they stop and sync gradients over PCIe after every backward pass. That communication eats time where no samples are processed. Out of a possible 25 samples/sec, 4 GPU DDP only achieved 9.16 — the rest was wasted waiting for all-reduce.
 
 | Run | GPUs | samples/sec | Expected | Actual multiplier | Scaling efficiency |
 |-----|------|-------------|----------|-------------------|--------------------|
 | DDP | 2 | 5.48 | 12.50 (2×) | 0.88× | 43.8% |
 | DDP | 4 | 9.16 | 25.00 (4×) | 1.47× | 36.6% |
+
+2 GPU DDP is actually **slower than single GPU** — all-reduce overhead exceeded the parallel compute benefit. At 4 GPUs, compute parallelism finally compensated, but efficiency still dropped to 36.6%. Adding GPUs on PCIe gives more throughput but worse efficiency per GPU — the all-reduce cost grows with every GPU added.
 
 ---
 

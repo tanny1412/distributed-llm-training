@@ -1184,6 +1184,9 @@ Same cost, 2× more throughput on NVLink. Efficiency tells you whether adding an
 
 On PCIe, efficiency drops as you add GPUs — each new GPU adds more all-reduce rounds at the same slow bandwidth. You get more throughput but pay a higher waste tax per GPU. At some point adding a GPU costs more (financially) than it returns in throughput.
 
+**What efficiency actually means — the simplest version:**
+4 GPUs must process 4 × 6.25 = 25 samples/sec if all they did was compute. But they also have to stop and sync gradients over PCIe after every backward pass. That communication eats time where no samples are being processed. So out of a possible 25 samples/sec, you only got 9.16. The rest was wasted waiting for all-reduce.
+
 Interview line: "DDP on PCIe actually slowed us down at 2 GPUs — all-reduce overhead exceeded the parallel compute benefit. At 4 GPUs compute parallelism finally won, but efficiency was still only 43%. The bottleneck is PCIe bandwidth, not GPU compute. On NVLink the crossover happens immediately at 2 GPUs and efficiency reaches 80%+."
 
 ### Stage 3 — PyTorch FSDP (complete)
