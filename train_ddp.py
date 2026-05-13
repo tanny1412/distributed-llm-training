@@ -35,7 +35,7 @@ def train():
     # full model on every rank — DDP replicates, 16GB per rank
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map={"": device},
         use_cache=False,
     )
@@ -89,6 +89,7 @@ def train():
 
         loss = outputs.loss
         loss.backward()       # DDP all-reduces gradients automatically here
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
         tracker.update(input_ids.shape[0] * world_size)  # global samples = local × world_size

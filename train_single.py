@@ -8,7 +8,7 @@ from utils.metrics import ThroughputTracker, gpu_memory_mb
 
 MODEL_ID = "meta-llama/Meta-Llama-3-8B"
 MAX_LENGTH = 512
-BATCH_SIZE = 2
+BATCH_SIZE = 4
 LR = 2e-5
 MAX_STEPS = 200
 LOG_EVERY = 10
@@ -23,7 +23,7 @@ def train():
     # load in FP16 — 8B x 2 bytes = 16GB, fits on A10G (24GB)
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map="cuda",
         use_cache=False,
     )

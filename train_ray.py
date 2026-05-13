@@ -31,7 +31,7 @@ def train_func(_config):
 
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map={"": device},
         use_cache=False,
     )
@@ -82,6 +82,7 @@ def train_func(_config):
 
         loss = outputs.loss
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
         tracker.update(input_ids.shape[0] * world_size)
