@@ -2,6 +2,10 @@
 
 Fine-tune Llama-3-8B across multiple GPUs. Benchmark Single GPU → DDP → FSDP → Ray Train on real hardware. Every number measured, every failure documented.
 
+![samples_per_sec across all runs](screenshots/mlflow_samples_per_sec_all_runs.png)
+
+![all runs](screenshots/mlflow_all_runs_list.png)
+
 ---
 
 ## The Problem
