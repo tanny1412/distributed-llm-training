@@ -50,6 +50,7 @@ def train_func(_config):
     tracker = ThroughputTracker()
 
     if rank == 0:
+        mlflow.set_tracking_uri("http://localhost:8080")
         mlflow.set_experiment("distributed-training")
         mlflow.start_run(run_name="ray-train-4gpu")
         mlflow.log_params({
