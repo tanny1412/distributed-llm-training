@@ -1252,6 +1252,12 @@ If FSDP batch=16 > 9.16 samples/sec, that's the real win: same 4 GPUs, more thro
 
 **Result: FSDP 4 GPU batch=16 → 25.76 samples/sec — 2.8× DDP's 9.16.**
 
+**Why run FSDP 2 GPU batch=16 next:**
+
+The question is cost, not throughput. DDP 4 GPU achieves 9.16 samples/sec — paying for 4 GPUs. If FSDP 2 GPU batch=16 also hits ~9 samples/sec, you're doing the same job at half the cost.
+
+GPU hours cost money. The technique is free. FSDP lets you do the same job with fewer GPUs — that's the business case. Companies don't pay for the technique, they pay for the GPUs. Less GPUs + better technique = same throughput + lower bill.
+
 Same 4 GPUs, same PCIe, same slow interconnect. Freed memory → bigger batch → communication cost amortized across 4× more samples per step.
 
 Steady memory barely moved: 17339 MB (batch=16) vs 15837 MB (batch=4). 4× more data per step, only 1.5GB more memory. The sharding is doing exactly what it should.
@@ -1320,5 +1326,5 @@ Not in our project scope (200 steps = minutes), but know it cold for interviews.
 | DDP           | 4    | 9.16        | 36.6%        | 64866MB       | Efficiency drops as GPUs added |
 | FSDP          | 4    | 7.26        | 29.0%        | 29965MB       | No checkpointing, batch=4      |
 | FSDP          | 4    | 25.76       | —            | 79327MB       | No checkpointing, batch=16     |
-| FSDP          | 2    | TBD         | TBD          | TBD           | No checkpointing, batch=16     |
+| FSDP          | 2    | TBD         | TBD          | TBD           | No checkpointing, batch=16 — can 2 GPUs match DDP 4 GPU? |
 | Ray Train DDP | 4    | TBD         | ~DDP%        | ~49549MB      | Simpler setup vs torchrun      |
