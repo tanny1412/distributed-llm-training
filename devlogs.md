@@ -268,6 +268,23 @@ Results after re-running both versions:
 | single-gpu (checkpointing OFF) | 5.45 | TBD | ~61783MB | TBD |
 | Saved by checkpointing         | —    | —   | —        | TBD |
 
+### Why peak memory is the number that matters for GPU sizing
+
+`steady_memory_mb` tells you what HBM the run uses between steps — weights + gradients + optimizer states. `peak_memory_mb` tells you the maximum HBM needed at any single moment during the run — the forward+backward window where activations are also in HBM.
+
+OOMs happen at peak, not steady-state. A run can have a 40GB steady-state and peak at 70GB during backward — if your GPU has 64GB, it crashes mid-backward even though it would have "fit" otherwise.
+
+**`peak_memory_mb` is the number you size your GPU against.**
+
+```
+peak (checkpointing OFF) → minimum GPU HBM needed without checkpointing
+peak (checkpointing ON)  → minimum GPU HBM needed with checkpointing
+```
+
+Real decision: if checkpointing OFF peaks at 70GB → need 80GB GPU (A100 SXM). If checkpointing ON brings peak to 45GB → can use a 48GB GPU (A6000) which is cheaper. The throughput penalty (18%) is the price you pay for the cheaper hardware.
+
+Interview line: "We tracked peak memory specifically for GPU sizing decisions. Steady-state memory tells you nothing about OOM risk — a run can crash mid-backward even if steady-state would fit. Peak right after backward is the true ceiling."
+
 Why the difference in samples/sec:
 - **Checkpointing ON**: activations discarded during forward. Backward reruns segments of forward to recompute them. Extra compute per step → lower throughput.
 - **Checkpointing OFF**: activations stored during forward. Backward reads them directly. No recomputation → faster, same memory here because activations aren't the dominant cost.
