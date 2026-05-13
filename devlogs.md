@@ -852,6 +852,21 @@ GPT-4 scale: hundreds of nodes → 3D parallelism mandatory.
 
 The line is model size vs hardware capacity, not the technique itself.
 
+### Model download speed — why location matters
+
+HuggingFace model weights are served from CDN nodes primarily in the US and EU. Download speed depends on network distance between the GPU instance and those servers.
+
+```
+US data center → HuggingFace CDN  ~50–100 MB/s  (short hop, same region)
+Australia instance → HuggingFace  ~5–10 MB/s    (trans-Pacific, ~14,000km)
+```
+
+16GB model at 8 MB/s ≈ 30 minutes. Same model at 80 MB/s ≈ 3 minutes.
+
+This is a one-time cost — HuggingFace caches the model in `~/.cache/huggingface/` after first download. Every subsequent run loads from local disk instantly.
+
+Not a GPU or hardware difference — purely network geography. The RTX PRO 6000 and A100 SXM download at the same speed if they're in the same data center region.
+
 ### PCIe vs NVLink — why interconnect speed matters for FSDP
 
 Two interconnect types for multi-GPU communication:
