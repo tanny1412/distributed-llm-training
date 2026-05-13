@@ -67,11 +67,8 @@ def train():
             )
             forward_peak_mb = torch.cuda.max_memory_allocated() / 1024**2
 
-            torch.cuda.reset_peak_memory_stats()
             loss = outputs.loss
             loss.backward()
-            backward_peak_mb = torch.cuda.max_memory_allocated() / 1024**2
-
             optimizer.step()
 
             tracker.update(input_ids.shape[0])
@@ -82,12 +79,10 @@ def train():
                     "samples_per_sec": tracker.samples_per_sec(),
                     "gpu_memory_mb": gpu_memory_mb(),
                     "forward_peak_mb": forward_peak_mb,
-                    "backward_peak_mb": backward_peak_mb,
                 }, step=step)
                 print(f"step {step} | loss {loss.item():.4f} | "
                       f"{tracker.samples_per_sec():.2f} samples/sec | "
-                      f"steady {gpu_memory_mb():.0f} MB | "
-                      f"fwd_peak {forward_peak_mb:.0f} MB | bwd_peak {backward_peak_mb:.0f} MB")
+                      f"steady {gpu_memory_mb():.0f} MB | fwd_peak {forward_peak_mb:.0f} MB")
 
             step += 1
 
