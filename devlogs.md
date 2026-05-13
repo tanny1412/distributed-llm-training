@@ -1250,6 +1250,12 @@ FSDP 4 GPU batch=16: TBD               (HBM freed by sharding → room for batch
 
 If FSDP batch=16 > 9.16 samples/sec, that's the real win: same 4 GPUs, more throughput, AND 75% less memory per rank. FSDP's point isn't efficiency — it's enabling batch sizes DDP physically can't run, and using that to recover throughput.
 
+**Result: FSDP 4 GPU batch=16 → 25.76 samples/sec — 2.8× DDP's 9.16.**
+
+Same 4 GPUs, same PCIe, same slow interconnect. Freed memory → bigger batch → communication cost amortized across 4× more samples per step.
+
+Steady memory barely moved: 17339 MB (batch=16) vs 15837 MB (batch=4). 4× more data per step, only 1.5GB more memory. The sharding is doing exactly what it should.
+
 ### Stage 4 — Ray Train (complete)
 - [x] train_ray.py — OOM at DDP.__init__, same as torchrun DDP
 - Same gradient bucket pre-allocation problem. Ray Train wraps DDP, doesn't change the memory math.
@@ -1313,6 +1319,6 @@ Not in our project scope (200 steps = minutes), but know it cold for interviews.
 | DDP           | 2    | 5.48        | 43.8%        | 64866MB       | PCIe all-reduce bottleneck     |
 | DDP           | 4    | 9.16        | 36.6%        | 64866MB       | Efficiency drops as GPUs added |
 | FSDP          | 4    | 7.26        | 29.0%        | 29965MB       | No checkpointing, batch=4      |
-| FSDP          | 4    | TBD         | TBD          | TBD           | No checkpointing, batch=16     |
+| FSDP          | 4    | 25.76       | —            | 79327MB       | No checkpointing, batch=16     |
 | FSDP          | 2    | TBD         | TBD          | TBD           | No checkpointing, batch=16     |
 | Ray Train DDP | 4    | TBD         | ~DDP%        | ~49549MB      | Simpler setup vs torchrun      |
