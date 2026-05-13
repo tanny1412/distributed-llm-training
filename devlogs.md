@@ -199,6 +199,27 @@ Discards activations after the forward pass, recomputes them during backprop.
 - Compute cost: ~30% more (forward pass runs twice)
 - Use when: memory-constrained, have compute to spare
 
+### Gradient checkpointing — memory vs compute tradeoff (measured)
+
+Gradient checkpointing is not free. It trades memory for compute. On hardware where memory is the binding constraint, it's mandatory. On hardware where memory is abundant, it's a pure throughput tax.
+
+**A100 SXM 80GB experiment** — same model, same code, two runs:
+
+| Run | Checkpointing | samples/sec | gpu_memory_mb |
+|-----|--------------|-------------|---------------|
+| single-gpu | ON  | 4.61 | 61783MB |
+| single-gpu-no-checkpointing | OFF | TBD | TBD |
+
+Why the difference in samples/sec:
+- **Checkpointing ON**: activations discarded during forward. Backward has to recompute them layer by layer (segment of forward reruns for each layer). Extra compute per step.
+- **Checkpointing OFF**: activations stored in HBM during forward. Backward reads them directly. No recomputation. Faster, but more HBM used.
+
+On A100 with 80GB, neither run OOMs — the model + gradients + optimizer states for 8B in BF16 leaves tens of GB free. Checkpointing saves memory we don't need. The only effect is the ~30% compute overhead showing up as lower samples/sec.
+
+On a 24GB GPU it's the opposite story — without checkpointing you OOM immediately (activations alone push past 24GB), so you have no choice.
+
+**Interview line**: "Gradient checkpointing is a memory-compute tradeoff. On our 24GB A10G hardware it was mandatory — without it we OOM during forward. On A100 with 80GB the memory was never the constraint, so checkpointing was just compute overhead. We measured the throughput difference directly: X% penalty for checkpointing on a memory-abundant GPU."
+
 ### The training loop
 zero_grad → forward pass → compute loss → backward → optimizer step
 

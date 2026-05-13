@@ -71,7 +71,19 @@ Total without tricks: well over 24GB. This is the problem each stage solves.
 | FSDP          | 4    | 0.97        | —            | 15837MB   | Minimum GPUs that fit. BF16, grad checkpointing |
 | Ray Train DDP | 4    | OOM         | —            | >24GB     | Same DDP OOM — gradient bucket at init |
 
-*Numbers filled in after GPU runs on Vast.ai*
+*A10G results above are from the OOM story. Full throughput numbers below from A100 runs.*
+
+---
+
+## A100 Benchmark Results (4× A100 SXM 80GB, NVLink, RunPod)
+
+| Backend | GPUs | Grad Checkpointing | samples/sec | Scaling eff. | Mem/rank | Notes |
+|---------|------|--------------------|-------------|--------------|----------|-------|
+| Single GPU | 1 | ON  | 4.61 | — | 61783MB | Baseline |
+| Single GPU | 1 | OFF | TBD  | — | TBD     | ~30% faster expected — no recomputation |
+| DDP        | 4 | ON  | TBD  | TBD | TBD   | |
+| FSDP       | 4 | ON  | TBD  | TBD | TBD   | |
+| Ray Train  | 4 | ON  | TBD  | TBD | TBD   | |
 
 ---
 
