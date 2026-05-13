@@ -118,6 +118,23 @@ Optimizer states are the silent killer — 32GB that sits in HBM every single st
 
 Gradient checkpointing only saves activation memory. It does nothing for gradients or optimizer states.
 
+### Why reducing batch size doesn't save you from optimizer state OOM
+
+Batch size only controls activation memory. Everything else is fixed per-parameter:
+
+```
+Weights:          16GB  ← fixed (8B params × 2 bytes)
+Gradients:        16GB  ← fixed (same shape as weights, always)
+Optimizer states: 32GB  ← fixed (AdamW momentum + variance per param)
+Activations:      varies ← the ONLY thing batch size controls
+```
+
+At batch_size=1 with gradient checkpointing, activations drop to ~0.5GB. But that's irrelevant when weights + gradients + optimizer states alone = 64GB.
+
+Reducing batch size moves a small number in an equation that's already 40GB over budget. The three fixed costs dominate. Only sharding (FSDP) spreads those fixed costs across GPUs.
+
+Interview line: "Batch size controls activation memory, which is the smallest of the four. Weights, gradients, and optimizer states are per-parameter — they don't shrink with batch size. That's why single GPU full fine-tuning of 8B is a math problem, not a tuning problem."
+
 ### Why batch size affects HBM usage
 More samples in a batch = more activations held in HBM simultaneously during forward.
 
@@ -341,6 +358,20 @@ SHARD_GRAD_OP → shard gradients + optimizer states, full weights (ZeRO-2)
 FULL_SHARD    → shard everything: weights + gradients + optimizer states (ZeRO-3) ← we use this
 ```
 FULL_SHARD = ~4GB/rank for 8B model. Maximum memory saving. The dramatic drop that makes the story.
+
+### Why FSDP throughput is low on consumer GPUs
+
+0.97 samples/sec across 4× RTX 4090 is slow. Three reasons:
+
+1. **Gradient checkpointing** — recomputes every activation during backward. ~30% extra compute per step on top of normal training.
+
+2. **PCIe not NVLink** — RTX 4090s on Vast.ai are connected via PCIe (16GB/s), not NVLink (600GB/s). FSDP does AllGather + ReduceScatter for every layer (32 layers × 2 = 64 communication rounds per step). Over PCIe each round is slow — most of wall time is waiting for communication, not computing.
+
+3. **batch_size=4** — communication cost is fixed per step regardless of batch size. Small batch = same communication overhead spread over fewer samples = high overhead per sample. Larger batch amortizes the cost.
+
+On NVLink A100s with batch_size=16: same model, 5-10× higher throughput. The 4090s are consumer GPUs — fast compute (TFLOPS), slow interconnect (PCIe).
+
+Interview line: "The absolute throughput isn't the point — the relative scaling and memory story are. On NVLink hardware the numbers look completely different."
 
 ### FSDP throughput — compute might suffer
 FSDP has more communication than DDP:
@@ -724,7 +755,14 @@ Why the `-L 8080:localhost:8080` flag: forwards port 8080 so MLflow UI is access
 - 32GB minimum before optimizer states
 
 **Attempt 3: batch_size=1**
-- Still OOM — optimizer states (32GB) + weights (16GB) = 48GB baseline
+- Still OOM — crashes inside `optimizer.step()` on the very first step
+- AdamW creates momentum + variance buffers lazily on first call (not at model load time)
+- Sequence:
+  ```
+  backward()       → 16GB gradients now in HBM. Total: 16GB weights + 16GB grads = 32GB
+  optimizer.step() → allocates 32GB momentum + variance buffers HERE → total 64GB → OOM
+                     weight update never runs
+  ```
 - Conclusion: full fine-tuning of 8B on 24GB is mathematically impossible without QLoRA
 
 ---
@@ -852,11 +890,34 @@ Interview line: "We detected the actual decoder layer class at runtime rather th
 - [ ] Run at 1, 2, 4 GPUs — record scaling efficiency
 - [ ] Show nvidia-smi: ~16–20GB on every rank
 
+### Stage 3 — PyTorch FSDP (complete)
+- [x] train_fsdp.py — sharded weights/grads/optimizer states
+- Results: 0.97 samples/sec, 15837MB/rank, loss stable 1.33→1.32 over 200 steps
+- BF16 + gradient checkpointing (use_reentrant=False) + gradient clipping (1.0)
+- Memory higher than theoretical 4GB because grad checkpointing recomputation + optimizer states peak during backward
+
 ### Stage 3 — PyTorch FSDP
-- [ ] train_fsdp.py — sharded weights/grads/optimizer states
 - [ ] Remove gradient checkpointing — show it fits without it
 - [ ] Show memory drop: ~18GB (DDP) → ~4–6GB (FSDP)
 - [ ] Increase batch size until OOM — compare max batch vs DDP
+
+### Stage 4 — Ray Train (complete)
+- [x] train_ray.py — OOM at DDP.__init__, same as torchrun DDP
+- Same gradient bucket pre-allocation problem. Ray Train wraps DDP, doesn't change the memory math.
+
+### FSDP scaling test — why only 4 GPUs work on 24GB
+
+Tested FSDP at 1, 2, 4 GPUs:
+
+**1 GPU**: FSDP auto-switches to `NO_SHARD` (nothing to shard across) → same as single GPU → OOM
+
+**2 GPUs**: per rank peak = 8GB shard + 8GB AllGather + 8GB gradients + 16GB optimizer states + 2GB activations = ~42GB → OOM
+
+**4 GPUs**: per rank peak = 4GB + 4GB + 4GB + 8GB + 2GB = ~22GB → fits (observed 21GB)
+
+4 GPUs is the **minimum** that fits Llama-3-8B on 24GB hardware. Not a choice — a constraint.
+
+Interview line: "On 24GB GPUs with an 8B model, 4-way FSDP isn't an optimization — it's the only configuration that fits. Single GPU, DDP, Ray Train, FSDP 1-GPU, FSDP 2-GPU all OOM. The memory math dictates the minimum GPU count."
 
 ### Stage 4 — Ray Train
 - [ ] train_ray.py — same DDP but no manual dist.init_process_group

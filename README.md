@@ -65,10 +65,11 @@ Total without tricks: well over 24GB. This is the problem each stage solves.
 | Backend       | GPUs | samples/sec | Scaling eff. | Mem/rank  | Notes                          |
 |---------------|------|-------------|--------------|-----------|--------------------------------|
 | Single GPU    | 1    | OOM         | —            | >24GB     | 16GB weights + 16GB grads > 24GB HBM |
-| DDP           | 2    | —           | —%           | ~18–20GB  | Still needs grad checkpointing |
-| DDP           | 4    | —           | —%           | ~18–20GB  | Target: 80–88% efficiency      |
-| FSDP          | 4    | 0.97        | —%           | 15837MB   | BF16, grad checkpointing, batch=4 |
-| Ray Train DDP | 4    | —           | ~DDP%        | ~18–20GB  | Simpler setup vs torchrun      |
+| DDP           | 4    | OOM         | —            | >24GB     | Gradient bucket alloc at init = 30GB/rank |
+| FSDP          | 1    | OOM         | —            | >24GB     | NO_SHARD fallback = same as single GPU |
+| FSDP          | 2    | OOM         | —            | >24GB     | 8GB shard + 16GB optimizer states = 42GB/rank |
+| FSDP          | 4    | 0.97        | —            | 15837MB   | Minimum GPUs that fit. BF16, grad checkpointing |
+| Ray Train DDP | 4    | OOM         | —            | >24GB     | Same DDP OOM — gradient bucket at init |
 
 *Numbers filled in after GPU runs on Vast.ai*
 
