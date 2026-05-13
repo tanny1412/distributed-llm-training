@@ -91,7 +91,7 @@ def train_func(_config):
 
         tracker.update(input_ids.shape[0] * world_size)
 
-        if step % LOG_EVERY == 0 and rank == 0:
+        if step % LOG_EVERY == 0:
             metrics = {
                 "loss": loss.item(),
                 "samples_per_sec": tracker.samples_per_sec(),
@@ -99,12 +99,13 @@ def train_func(_config):
                 "forward_peak_mb": forward_peak_mb,
                 "activation_mb": activation_mb,
             }
-            mlflow.log_metrics(metrics, step=step)
-            ray_train.report(metrics)   # Ray also tracks metrics natively
-            print(f"step {step} | loss {loss.item():.4f} | "
-                  f"{tracker.samples_per_sec():.2f} samples/sec | "
-                  f"steady {gpu_memory_mb():.0f} MB | "
-                  f"fwd_peak {forward_peak_mb:.0f} MB | activations {activation_mb:.0f} MB")
+            ray_train.report(metrics)   # must be called by ALL ranks — it's a sync barrier
+            if rank == 0:
+                mlflow.log_metrics(metrics, step=step)
+                print(f"step {step} | loss {loss.item():.4f} | "
+                      f"{tracker.samples_per_sec():.2f} samples/sec | "
+                      f"steady {gpu_memory_mb():.0f} MB | "
+                      f"fwd_peak {forward_peak_mb:.0f} MB | activations {activation_mb:.0f} MB")
 
         step += 1
 
