@@ -1168,7 +1168,21 @@ There is a crossover point between 2 and 4 GPUs on PCIe hardware. On NVLink the 
 
 NCCL ring all-reduce: gradient tensor split into chunks, passed around the ring. Communication grows sub-linearly with GPU count, not proportionally. That's why 4 GPUs doesn't cost 2× the all-reduce time of 2 GPUs.
 
-Efficiency is ~43% at both 2 and 4 GPU — the PCIe bandwidth ceiling is consistent regardless of GPU count. Adding more GPUs on PCIe won't push past this ceiling.
+Efficiency drops from 43.8% (2 GPU) to 36.6% (4 GPU) even though throughput went up (5.48 → 9.16).
+
+**Throughput and efficiency can move in opposite directions — both are true simultaneously.**
+
+Throughput = total work done. Efficiency = how much of the theoretical maximum you're using.
+
+Why efficiency matters — it's a cost question:
+```
+4 GPUs at $10/hr = $40/hr
+36.6% efficiency = getting 1.47 GPUs worth of work for $40
+85% efficiency   = getting 3.4 GPUs worth of work for $40  (NVLink)
+```
+Same cost, 2× more throughput on NVLink. Efficiency tells you whether adding another GPU pays for itself.
+
+On PCIe, efficiency drops as you add GPUs — each new GPU adds more all-reduce rounds at the same slow bandwidth. You get more throughput but pay a higher waste tax per GPU. At some point adding a GPU costs more (financially) than it returns in throughput.
 
 Interview line: "DDP on PCIe actually slowed us down at 2 GPUs — all-reduce overhead exceeded the parallel compute benefit. At 4 GPUs compute parallelism finally won, but efficiency was still only 43%. The bottleneck is PCIe bandwidth, not GPU compute. On NVLink the crossover happens immediately at 2 GPUs and efficiency reaches 80%+."
 
