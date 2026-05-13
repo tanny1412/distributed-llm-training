@@ -80,7 +80,7 @@ Total without tricks: well over 24GB. This is the problem each stage solves.
 | Backend | GPUs | Grad Checkpointing | samples/sec | Scaling eff. | Mem/rank | Notes |
 |---------|------|--------------------|-------------|--------------|----------|-------|
 | Single GPU | 1 | ON  | 4.61 | — | 61783MB | Baseline |
-| Single GPU | 1 | OFF | 5.45 | — | 61783MB | 18% faster — no recomputation overhead. Memory identical: fixed costs dominate at 80GB |
+| Single GPU | 1 | OFF | 5.45 | — | 61783MB | 18% faster — no recomputation overhead. Memory identical because activations are freed during backward, before we measure |
 | DDP        | 4 | ON  | TBD  | TBD | TBD   | |
 | FSDP       | 4 | ON  | TBD  | TBD | TBD   | |
 | Ray Train  | 4 | ON  | TBD  | TBD | TBD   | |

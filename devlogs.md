@@ -212,7 +212,30 @@ Gradient checkpointing is not free. It trades memory for compute. On hardware wh
 
 **Speedup**: 18.2% faster without checkpointing. Less than the theoretical ~30% because at 80GB scale other factors (weight loading, memory bandwidth) partially limit throughput too.
 
-**Memory identical**: 61783MB in both runs. The fixed costs — weights (16GB) + gradients (16GB) + optimizer states (32GB) — dominate HBM usage. Activation savings from checkpointing are small relative to those and don't show up at 80GB scale.
+**Memory identical**: 61783MB in both runs. Not because checkpointing doesn't save activation memory — it does. But because of *when* we measure.
+
+`gpu_memory_mb()` calls `torch.cuda.memory_allocated()` — current allocations at the exact moment we log, which is after `optimizer.step()`. By then, activations are already long gone.
+
+Exact order every step:
+```
+zero_grad()       ← clears previous gradients
+forward()         ← activations created in HBM
+backward()        ← activations consumed layer by layer, freed as we go
+                     activations GONE by the time backward() returns
+optimizer.step()  ← weights updated using optimizer states
+gpu_memory_mb()   ← we log HERE
+```
+
+Activations are freed **during** backward — as it walks each layer, it reads the activation, computes the gradient, then releases the activation. `optimizer.step()` never sees them. So at logging time, only the fixed costs remain:
+
+```
+Weights:          ~16GB
+Gradients:        ~16GB  (not yet zeroed — zero_grad runs next step)
+Optimizer states: ~32GB
+Total:            ~64GB  ← same regardless of checkpointing
+```
+
+To capture the difference, you'd need `torch.cuda.max_memory_allocated()` — peak since last reset. That would show the spike during the forward→backward window where checkpointing actually changes memory. Our `memory_allocated()` at logging time is steady-state, after the window closes.
 
 Why the difference in samples/sec:
 - **Checkpointing ON**: activations discarded during forward. Backward reruns segments of forward to recompute them. Extra compute per step → lower throughput.
