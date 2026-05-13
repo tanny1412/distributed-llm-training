@@ -239,34 +239,50 @@ To capture the difference, you'd need `torch.cuda.max_memory_allocated()` — pe
 
 ### Isolating activation memory — updated train_single.py
 
-Added `peak_memory_mb` logging by resetting peak stats at the start of each step and capturing right after `backward()`:
+Three metrics logged per step:
 
 ```python
-torch.cuda.reset_peak_memory_stats()   # reset counter at step start
 optimizer.zero_grad()
-outputs = model(...)
+torch.cuda.reset_peak_memory_stats()
+baseline_mb = torch.cuda.memory_allocated() / 1024**2   # weights + optimizer states (no gradients)
+
+outputs = model(...)                                      # forward pass
+forward_peak_mb = torch.cuda.max_memory_allocated() / 1024**2
+activation_mb = forward_peak_mb - baseline_mb            # pure activation cost
+
 loss.backward()
-peak_memory_mb = torch.cuda.max_memory_allocated() / 1024**2   # caught here — activations still in HBM
 optimizer.step()
-# gpu_memory_mb() = memory_allocated() logged after — steady-state, activations gone
+steady_mb = gpu_memory_mb()                              # weights + gradients + optimizer states
 ```
 
-Two metrics per step:
 ```
-steady_memory_mb  = weights + gradients + optimizer states   (activations freed during backward)
-peak_memory_mb    = weights + gradients + activations        (caught right after backward)
+baseline_mb     = weights + optimizer states      (after zero_grad — gradients freed)
+forward_peak_mb = weights + optimizer states + activations
+activation_mb   = forward_peak_mb - baseline_mb  ← pure activation memory
+steady_mb       = weights + gradients + optimizer states (after optimizer.step)
+```
 
-peak - steady         = activation memory for this run
-peak(OFF) - peak(ON)  = memory saved by gradient checkpointing
+Why `fwd_peak - steady` is wrong:
+- `zero_grad()` frees gradients before forward, so `forward_peak` has no gradients
+- `steady` is measured after `optimizer.step()` when gradients exist again
+- so `fwd_peak < steady` even though activations are present — gradients dominate the difference
+- correct isolation: subtract `baseline` (same state as fwd_peak, just before activations created)
+
+The correct comparison:
+```
+activation_mb(OFF) - activation_mb(ON) = memory saved by gradient checkpointing
+
+checkpointing ON  → activation_mb small  (most activations discarded, only checkpoints kept)
+checkpointing OFF → activation_mb large  (all 32 layers stored simultaneously)
 ```
 
 Results after re-running both versions:
 
-| Run | samples/sec | peak_memory_mb | steady_memory_mb | activation_memory |
-|-----|-------------|---------------|-----------------|-------------------|
-| single-gpu (checkpointing ON)  | 4.61 | TBD | ~61783MB | TBD |
-| single-gpu (checkpointing OFF) | 5.45 | TBD | ~61783MB | TBD |
-| Saved by checkpointing         | —    | —   | —        | TBD |
+| Run | samples/sec | steady_mb | fwd_peak_mb | activation_mb |
+|-----|-------------|-----------|-------------|---------------|
+| single-gpu (checkpointing ON)  | TBD | ~61783MB | TBD | TBD |
+| single-gpu (checkpointing OFF) | TBD | ~61783MB | TBD | TBD |
+| Saved by checkpointing         | —   | —        | —   | TBD |
 
 ### FSDP batch size experiment — recovering throughput with freed memory
 
