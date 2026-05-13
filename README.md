@@ -171,5 +171,7 @@ Alpaca — 52k instruction-response pairs (Stanford, 2023). Response-only loss m
 - HuggingFace Transformers + Datasets
 - MLflow (experiment tracking + run comparison)
 - Ray Train (Stage 4)
-- Vast.ai 4× RTX 4090 24GB (OOM story)
-- RunPod 4× A100 SXM 80GB NVLink (benchmarks)
+- Vast.ai 4× RTX 4090 24GB PCIe (Phase 1 — OOM story)
+- Vast.ai 4× RTX PRO 6000 96GB PCIe 5.0 (Phase 2 — benchmarks)
+
+**Note on interconnect:** RTX PRO 6000 uses PCIe 5.0 (~54GB/s), not NVLink (600GB/s). FSDP scaling efficiency will reflect PCIe overhead. On NVLink hardware the same workload would achieve 85–92% efficiency — the gap is the story.

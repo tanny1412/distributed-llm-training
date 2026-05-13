@@ -852,6 +852,31 @@ GPT-4 scale: hundreds of nodes → 3D parallelism mandatory.
 
 The line is model size vs hardware capacity, not the technique itself.
 
+### PCIe vs NVLink — why interconnect speed matters for FSDP
+
+Two interconnect types for multi-GPU communication:
+
+```
+PCIe 5.0 x16  →  ~54 GB/s   consumer and workstation GPUs (RTX, RTX PRO)
+NVLink        →  600 GB/s   data center GPUs (A100, H100, H200)
+```
+
+FSDP does AllGather + ReduceScatter for every transformer layer — 32 layers × 2 = 64 communication rounds per step. Over PCIe, each round is slow. Most of wall time becomes waiting for communication, not computing. Scaling efficiency drops significantly vs NVLink hardware.
+
+DDP and single GPU runs are unaffected — no inter-GPU communication.
+
+**Why PCIe benchmarks are still valuable:**
+
+Showing 60% scaling efficiency on PCIe and explaining why is a stronger interview answer than showing 88% on NVLink without understanding it. The bottleneck is visible in the data. The explanation — AllGather latency per layer × 64 rounds × slow interconnect — is exactly what an interviewer wants to hear.
+
+The story: "On PCIe 5.0 our FSDP scaling efficiency was X%. The bottleneck is AllGather + ReduceScatter over 64 communication rounds per step at 54GB/s. On NVLink at 600GB/s the same workload would achieve 85–92% efficiency — 11× faster interconnect directly translates to less idle time per step."
+
+**Hardware used:**
+- Phase 1 (OOM story): 4× RTX 4090 24GB, PCIe, Vast.ai
+- Phase 2 (benchmarks): 4× RTX PRO 6000 96GB, PCIe 5.0, Vast.ai
+
+96GB VRAM means no memory pressure — all configurations fit without tricks. Pure benchmark numbers.
+
 ## Project Scope — What We Did and Didn't Build
 
 **In scope:**
