@@ -76,7 +76,7 @@ def train():
 
     if rank == 0:
         mlflow.set_experiment("distributed-training")
-        mlflow.start_run(run_name="fsdp-4gpu")
+        mlflow.start_run(run_name=f"fsdp-{world_size}gpu-batch{BATCH_SIZE}")
         mlflow.log_params({
             "model": MODEL_ID,
             "batch_size": BATCH_SIZE,

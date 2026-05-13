@@ -7,7 +7,9 @@ RUN_NAMES = [
     "single-gpu-no-checkpointing",
     "ddp-2gpu",
     "ddp-4gpu",
-    "fsdp-4gpu",
+    "fsdp-4gpu-batch4",
+    "fsdp-4gpu-batch16",
+    "fsdp-2gpu-batch16",
     "ray-train-4gpu",
 ]
 
@@ -74,7 +76,7 @@ def print_table(results):
         print(f"{name:<35} {fmt(tput):>12}")
 
     # Scaling efficiency (DDP and FSDP only)
-    SCALING_RUNS = ["ddp-2gpu", "ddp-4gpu", "fsdp-4gpu"]
+    SCALING_RUNS = ["ddp-2gpu", "ddp-4gpu", "fsdp-4gpu-batch4", "fsdp-4gpu-batch16", "fsdp-2gpu-batch16"]
     print("\n--- Scaling Efficiency (vs single-gpu baseline) ---")
     print(f"{'Run':<35} {'samples/sec':>12} {'expected':>10} {'actual mult':>12} {'efficiency':>12}")
     print("-" * 85)
