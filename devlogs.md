@@ -1152,8 +1152,8 @@ Results:
 | Run | samples/sec | vs single GPU | scaling efficiency |
 |-----|-------------|---------------|-------------------|
 | Single GPU | 6.25 | baseline | — |
-| DDP 2 GPU  | 5.46 | 0.87×  | 43.5% |
-| DDP 4 GPU  | 10.66 | 1.70× | 42.6% |
+| DDP 2 GPU  | 5.48 | 0.88×  | 43.8% |
+| DDP 4 GPU  | 9.16 | 1.47×  | 36.6% |
 
 **Why 2 GPU is below single GPU but 4 GPU is above:**
 
@@ -1243,8 +1243,8 @@ Not in our project scope (200 steps = minutes), but know it cold for interviews.
 |---------------|------|-------------|--------------|---------------|--------------------------------|
 | Single GPU    | 1    | 6.25        | baseline     | 49549MB       | Grad checkpointing ON          |
 | Single GPU    | 1    | 7.16        | —            | 62421MB       | Grad checkpointing OFF         |
-| DDP           | 2    | 5.46        | 43.5%        | 64466MB       | PCIe all-reduce bottleneck     |
-| DDP           | 4    | 10.66       | 42.6%        | 64866MB       | PCIe all-reduce bottleneck     |
+| DDP           | 2    | 5.48        | 43.8%        | 64866MB       | PCIe all-reduce bottleneck     |
+| DDP           | 4    | 9.16        | 36.6%        | 64866MB       | Efficiency drops as GPUs added |
 | FSDP          | 4    | TBD         | TBD          | TBD           | No checkpointing, batch=4      |
 | FSDP          | 4    | TBD         | TBD          | TBD           | No checkpointing, batch=16     |
 | FSDP          | 2    | TBD         | TBD          | TBD           | No checkpointing, batch=16     |

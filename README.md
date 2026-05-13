@@ -98,8 +98,8 @@ Baseline: 6.25 samples/sec (single GPU, ckpt ON, RTX PRO 6000)
 
 | Run | GPUs | samples/sec | Expected | Actual multiplier | Scaling efficiency |
 |-----|------|-------------|----------|-------------------|--------------------|
-| DDP | 2 | TBD | 12.50 (2×) | TBD | TBD |
-| DDP | 4 | TBD | 25.00 (4×) | TBD | TBD |
+| DDP | 2 | 5.48 | 12.50 (2×) | 0.88× | 43.8% |
+| DDP | 4 | 9.16 | 25.00 (4×) | 1.47× | 36.6% |
 
 ---
 
