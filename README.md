@@ -77,10 +77,13 @@ Total without tricks: well over 24GB. This is the problem each stage solves.
 
 ## A100 Benchmark Results (4× A100 SXM 80GB, NVLink, RunPod)
 
-| Backend | GPUs | Grad Checkpointing | samples/sec | Scaling eff. | Mem/rank | Notes |
-|---------|------|--------------------|-------------|--------------|----------|-------|
-| Single GPU | 1 | ON  | 4.61 | — | 61783MB | Baseline |
-| Single GPU | 1 | OFF | 5.45 | — | 61783MB | 18% faster — no recomputation overhead. Memory identical because activations are freed during backward, before we measure |
+`gpu_memory_mb` = steady-state after optimizer.step() (activations already freed). `peak_memory_mb` = right after backward() (activations still in HBM). `peak - steady = activation memory`.
+
+| Backend | GPUs | Grad Checkpointing | samples/sec | Scaling eff. | steady_mem/rank | peak_mem/rank | activation_mem |
+|---------|------|--------------------|-------------|--------------|-----------------|---------------|----------------|
+| Single GPU | 1 | ON  | 4.61 | — | 61783MB | TBD | TBD |
+| Single GPU | 1 | OFF | 5.45 | — | 61783MB | TBD | TBD |
+| Saved by checkpointing | — | — | -18% throughput | — | — | — | TBD |
 | DDP        | 4 | ON  | TBD  | TBD | TBD   | |
 | FSDP       | 4 | ON  | TBD  | TBD | TBD   | |
 | Ray Train  | 4 | ON  | TBD  | TBD | TBD   | |

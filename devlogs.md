@@ -237,6 +237,37 @@ Total:            ~64GB  ← same regardless of checkpointing
 
 To capture the difference, you'd need `torch.cuda.max_memory_allocated()` — peak since last reset. That would show the spike during the forward→backward window where checkpointing actually changes memory. Our `memory_allocated()` at logging time is steady-state, after the window closes.
 
+### Isolating activation memory — updated train_single.py
+
+Added `peak_memory_mb` logging by resetting peak stats at the start of each step and capturing right after `backward()`:
+
+```python
+torch.cuda.reset_peak_memory_stats()   # reset counter at step start
+optimizer.zero_grad()
+outputs = model(...)
+loss.backward()
+peak_memory_mb = torch.cuda.max_memory_allocated() / 1024**2   # caught here — activations still in HBM
+optimizer.step()
+# gpu_memory_mb() = memory_allocated() logged after — steady-state, activations gone
+```
+
+Two metrics per step:
+```
+steady_memory_mb  = weights + gradients + optimizer states   (activations freed during backward)
+peak_memory_mb    = weights + gradients + activations        (caught right after backward)
+
+peak - steady         = activation memory for this run
+peak(OFF) - peak(ON)  = memory saved by gradient checkpointing
+```
+
+Results after re-running both versions:
+
+| Run | samples/sec | peak_memory_mb | steady_memory_mb | activation_memory |
+|-----|-------------|---------------|-----------------|-------------------|
+| single-gpu (checkpointing ON)  | 4.61 | TBD | ~61783MB | TBD |
+| single-gpu (checkpointing OFF) | 5.45 | TBD | ~61783MB | TBD |
+| Saved by checkpointing         | —    | —   | —        | TBD |
+
 Why the difference in samples/sec:
 - **Checkpointing ON**: activations discarded during forward. Backward reruns segments of forward to recompute them. Extra compute per step → lower throughput.
 - **Checkpointing OFF**: activations stored during forward. Backward reads them directly. No recomputation → faster, same memory here because activations aren't the dominant cost.
@@ -245,7 +276,7 @@ On A100 with 80GB, neither run OOMs — checkpointing saves memory we don't need
 
 On a 24GB GPU it's the opposite story — without checkpointing activations alone push past 24GB on the forward pass, so there's no choice.
 
-**Interview line**: "Gradient checkpointing is a memory-compute tradeoff. On 24GB hardware it was mandatory — without it we OOM. On A100 with 80GB the memory was never the constraint, so checkpointing was pure compute overhead. We measured it: 18% throughput penalty. And memory usage was identical in both runs — at 80GB scale the fixed costs (weights, gradients, optimizer states) dominate, not activations."
+**Interview line**: "Gradient checkpointing is a memory-compute tradeoff. On 24GB hardware it was mandatory — without it we OOM. On A100 with 80GB the memory was never the constraint, so checkpointing was pure compute overhead. We measured it: 18% throughput penalty. The peak vs steady-state memory split shows exactly how much activation memory checkpointing saves — peak catches activations still in HBM right after backward, steady-state is after they're freed."
 
 ### The training loop
 zero_grad → forward pass → compute loss → backward → optimizer step
