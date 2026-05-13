@@ -1337,5 +1337,5 @@ Not in our project scope (200 steps = minutes), but know it cold for interviews.
 | DDP           | 4    | 9.16        | 36.6%        | 64866MB       | Efficiency drops as GPUs added |
 | FSDP          | 4    | 7.26        | 29.0%        | 29965MB       | No checkpointing, batch=4      |
 | FSDP          | 4    | 25.76       | —            | 79327MB       | No checkpointing, batch=16     |
-| FSDP          | 2    | TBD         | TBD          | TBD           | No checkpointing, batch=16 — can 2 GPUs match DDP 4 GPU? |
-| Ray Train DDP | 4    | TBD         | ~DDP%        | ~49549MB      | Simpler setup vs torchrun      |
+| FSDP          | 2    | 13.09       | —            | 90614MB       | No checkpointing, batch=16 — 1.43× DDP at half the cost  |
+| Ray Train DDP | 4    | 9.07        | ~DDP         | 64866MB       | Simpler setup vs torchrun      |
