@@ -97,6 +97,27 @@ Story arc for Stage 1:
 1. Run without gradient checkpointing → OOM on backward (commit this first)
 2. Add these two lines → fits → record samples/sec, peak HBM, batch size
 
+### Four things that occupy HBM during training
+
+```
+Weights          → 16GB  (loaded at startup, always in HBM)
+Activations      → varies (created during forward, freed after backward)
+Gradients        → 16GB  (created during backward, freed after optimizer step)
+Optimizer states → 32GB  (AdamW: momentum + variance, persist across all steps)
+```
+
+They don't all peak at the same time:
+```
+forward:         weights + activations
+backward:        weights + activations (shrinking) + gradients (growing)
+optimizer step:  weights + gradients + optimizer states  ← peak
+next step start: weights + optimizer states (gradients zeroed by zero_grad)
+```
+
+Optimizer states are the silent killer — 32GB that sits in HBM every single step once initialized. This is why batch_size=1 + gradient checkpointing still OOMs on a single 24GB GPU. Before a single activation is computed: 16GB weights + 32GB optimizer states = 48GB.
+
+Gradient checkpointing only saves activation memory. It does nothing for gradients or optimizer states.
+
 ### Why batch size affects HBM usage
 More samples in a batch = more activations held in HBM simultaneously during forward.
 
@@ -688,6 +709,60 @@ Why the `-L 8080:localhost:8080` flag: forwards port 8080 so MLflow UI is access
 7. Run `train_ray.py` → compare to DDP
 8. Fill benchmark table in README with real numbers
 
+## GPU Run — What Actually Happened
+
+### Stage 1 — Single GPU (3 attempts)
+
+**Attempt 1: No gradient checkpointing**
+- Model loaded fine (16GB fits in 24GB HBM)
+- OOM during **forward pass** — activations alone filled 24GB
+- `23.06 GiB allocated, tried to allocate 16 MiB`
+
+**Attempt 2: Gradient checkpointing + batch_size=4**
+- OOM during **backward pass**
+- Gradient checkpointing reduces activations but not gradients (16GB) or weights (16GB)
+- 32GB minimum before optimizer states
+
+**Attempt 3: batch_size=1**
+- Still OOM — optimizer states (32GB) + weights (16GB) = 48GB baseline
+- Conclusion: full fine-tuning of 8B on 24GB is mathematically impossible without QLoRA
+
+---
+
+### Stage 2 — DDP (1 attempt)
+
+**Attempt 1: torchrun --nproc_per_node=4**
+- OOM at `DDP.__init__` — never reached step 0
+- DDP pre-allocates gradient bucket = full model size (15GB) upfront
+- 15GB weights + 15GB gradient buffer = 30GB > 24GB
+
+---
+
+### Stage 3 — FSDP (5 attempts)
+
+**Attempt 1: Hardcoded LlamaDecoderLayer import**
+- 22GB/rank — same as no sharding
+- Newer transformers wraps `LlamaDecoderLayer` → `isinstance()` always False → FSDP treats whole model as one unit → AllGather full 16GB before every forward
+
+**Attempt 2: Runtime class detection**
+- `decoder_layer_cls = type(model.model.layers[0])`
+- Memory: 22GB → 11GB/rank. Sharding confirmed.
+- OOM on backward — activations without gradient checkpointing = 13GB/rank
+- Math: 4GB weights + 13GB activations + 4GB gradients + 8GB optimizer = 29GB
+
+**Attempt 3: Added gradient checkpointing**
+- Training started, all 4 GPUs at 100% compute, peak 21GB/rank
+- `loss nan` from step 10 — FP16 overflow in forward pass (SiLU with large inputs → inf × 0 = NaN)
+
+**Attempt 4: Added gradient clipping**
+- Still NaN — clipping is post-backward, overflow was in forward pass itself
+
+**Attempt 5: Switched to BF16**
+- BF16 has same exponent range as FP32 (8 bits vs FP16's 5)
+- Loss immediately stable: 1.33 → 1.39 → 1.52 → running
+
+---
+
 ## Stages
 
 ### Stage 1 — Single GPU Baseline (complete)
@@ -696,6 +771,81 @@ Why the `-L 8080:localhost:8080` flag: forwards port 8080 so MLflow UI is access
 - Root cause: 16GB weights + 16GB gradients = 32GB minimum, exceeds 24GB. Optimizer states add another 32GB.
 - Conclusion: full fine-tuning of 8B on a single 24GB GPU is not feasible. OOM is the story.
 - Screenshot saved: screenshots/stage1_single_gpu_oom.png
+
+### BF16 vs FP16 — why BF16 is preferred for training
+
+```
+FP16:  1 sign + 5 exponent + 10 mantissa bits  → max value: 65504
+BF16:  1 sign + 8 exponent + 7 mantissa bits   → max value: ~3.4 × 10^38 (same as FP32)
+FP32:  1 sign + 8 exponent + 23 mantissa bits  → max value: ~3.4 × 10^38
+```
+
+FP16 has only 5 exponent bits → tiny representable range → easy to overflow to inf during forward pass (SiLU activation with large inputs → inf × 0 = NaN). NaN propagates through all subsequent operations and corrupts weights permanently.
+
+BF16 has 8 exponent bits (same as FP32) → same range, impossible to overflow where FP32 wouldn't. Less mantissa precision (7 bits vs 10) but training is robust to that. 
+
+RTX 4090, A100, H100 all support BF16 natively. BF16 is the default format for modern LLM training. FP16 requires GradScaler to be safe; BF16 does not.
+
+Switch: `torch_dtype=torch.bfloat16` + `MixedPrecision(param_dtype=torch.bfloat16, ...)`. Loss immediately stable.
+
+### NaN loss in FSDP — FP16 gradient overflow
+
+Symptom: loss=1.3 at step 0, then `loss nan` from step 10 onward. Training broken.
+
+Cause: all-FP16 mixed precision (`param_dtype=float16, reduce_dtype=float16`). FP16 max value is 65504. During backward, gradients can spike past that → overflow to `inf` → NaN propagates through all subsequent operations.
+
+Fix: gradient clipping before optimizer step. FSDP has its own method — can't use `torch.nn.utils.clip_grad_norm_` because gradients are sharded:
+```python
+loss.backward()
+model.clip_grad_norm_(1.0)  # FSDP-aware — gathers sharded grads, clips, rescatters
+optimizer.step()
+```
+
+Why `model.clip_grad_norm_` not `torch.nn.utils.clip_grad_norm_`: standard PyTorch clipping computes the global grad norm by reading all `.grad` attributes. With FSDP, gradients are sharded — each rank only has its own shard. The global norm requires an AllReduce across ranks. `model.clip_grad_norm_` handles that communication internally.
+
+Max norm = 1.0: industry standard. If gradient vector magnitude exceeds 1.0, all gradients scaled down proportionally. Prevents spikes without killing signal.
+
+### FSDP — why activations still OOM even after sharding
+
+FSDP shards weights + gradients + optimizer states across ranks. But **activations are not sharded** — each rank stores full activations for its own batch.
+
+Memory per rank without gradient checkpointing (batch_size=4, seq_len=512):
+```
+Weights (sharded):         4GB   ← 16GB / 4 ranks
+Activations (NOT sharded): ~13GB ← 32 layers × ~400MB each
+Gradients (sharded):       4GB
+Optimizer states (sharded):8GB
+Total:                     ~29GB > 24GB → OOM on backward
+```
+
+nvidia-smi confirmed: 11GB/rank after wrap policy fix (down from 22GB with broken wrap policy), still OOM.
+
+Fix: `model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})`
+
+`use_reentrant=False` is required for FSDP — the default reentrant checkpointing uses Python autograd hooks that conflict with FSDP's own hooks. Non-reentrant uses torch.autograd.graph instead, which is FSDP-safe.
+
+With gradient checkpointing: activations drop from ~13GB to ~2GB. Total ~18GB → fits in 24GB.
+
+### FSDP wrap policy — why hardcoded imports break
+
+Original code:
+```python
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+wrap_policy = functools.partial(transformer_auto_wrap_policy, transformer_layer_cls={LlamaDecoderLayer})
+```
+
+Problem: newer transformers versions rename or restructure model classes. If `LlamaDecoderLayer` doesn't match the actual class in the loaded model, FSDP finds no layers to wrap and treats the entire 16GB model as one FSDP unit. Result: AllGather reconstructs the full model before every forward pass — same memory as no sharding. nvidia-smi shows 22GB per rank instead of ~4GB.
+
+Fix: detect the actual decoder layer class at runtime:
+```python
+model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype=torch.float16)
+decoder_layer_cls = type(model.model.layers[0])  # whatever class it actually is
+wrap_policy = functools.partial(transformer_auto_wrap_policy, transformer_layer_cls={decoder_layer_cls})
+```
+
+Works regardless of transformers version. The model is already loaded on CPU before wrapping, so `model.model.layers[0]` is always accessible.
+
+Interview line: "We detected the actual decoder layer class at runtime rather than hardcoding the import — newer transformers versions restructure internals and a stale import silently breaks FSDP sharding. The symptom is 22GB/rank instead of 4GB."
 
 ### Stage 2 — PyTorch DDP
 - [ ] train_ddp.py — full model on every rank, torchrun launcher

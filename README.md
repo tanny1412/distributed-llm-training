@@ -42,14 +42,16 @@ Total without tricks: well over 24GB. This is the problem each stage solves.
 
 ### Stage 2 — PyTorch DDP
 - Full model replicated on all 4 GPUs (~16GB/rank)
-- Gradients all-reduced after every backward
-- Still needs gradient checkpointing
-- Target scaling efficiency: 80–88% at 4 GPUs
+- Crashed at `DDP.__init__` — pre-allocates gradient buffer same size as model (15GB). 15GB weights + 15GB buffer = 30GB > 24GB before training even starts.
 
 ### Stage 3 — PyTorch FSDP
 - Model weights + gradients + optimizer states sharded across 4 GPUs
-- Memory drops from ~18GB (DDP) to ~4–6GB per rank
-- No gradient checkpointing needed — larger batch, better GPU utilization
+- 5 attempts before stable training:
+  1. Hardcoded `LlamaDecoderLayer` import → FSDP didn't shard (22GB/rank). Newer transformers wraps the class — `isinstance()` always failed.
+  2. Fixed with `type(model.model.layers[0])` runtime detection → 11GB/rank, sharding confirmed
+  3. No gradient checkpointing → OOM on backward (activations 13GB/rank)
+  4. Added gradient checkpointing → training started but `loss nan` from step 10. FP16 overflow in forward pass.
+  5. Switched to BF16 → loss stable, training running
 
 ### Stage 4 — Ray Train
 - Same DDP training, different launcher
