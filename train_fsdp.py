@@ -1,4 +1,5 @@
 import os
+import argparse
 import torch
 import torch.distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -14,13 +15,12 @@ from utils.metrics import ThroughputTracker, gpu_memory_mb
 
 MODEL_ID = "meta-llama/Meta-Llama-3-8B"
 MAX_LENGTH = 512
-BATCH_SIZE = 4   # start conservative, increase after confirming FSDP sharding works
 LR = 2e-5
 MAX_STEPS = 200
 LOG_EVERY = 10
 
 
-def train():
+def train(batch_size):
     local_rank = int(os.environ["LOCAL_RANK"])
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
@@ -69,7 +69,7 @@ def train():
 
     dataset = AlpacaDataset(tokenizer, max_length=MAX_LENGTH)
     sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, sampler=sampler)
+    dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
 
@@ -77,10 +77,10 @@ def train():
 
     if rank == 0:
         mlflow.set_experiment("distributed-training")
-        mlflow.start_run(run_name=f"fsdp-{world_size}gpu-batch{BATCH_SIZE}")
+        mlflow.start_run(run_name=f"fsdp-{world_size}gpu-batch{batch_size}")
         mlflow.log_params({
             "model": MODEL_ID,
-            "batch_size": BATCH_SIZE,
+            "batch_size": batch_size,
             "world_size": world_size,
             "max_length": MAX_LENGTH,
             "lr": LR,
@@ -141,4 +141,7 @@ def train():
 
 
 if __name__ == "__main__":
-    train()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--batch_size", type=int, default=4)
+    args = parser.parse_args()
+    train(args.batch_size)
