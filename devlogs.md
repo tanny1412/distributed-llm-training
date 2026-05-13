@@ -268,6 +268,27 @@ Results after re-running both versions:
 | single-gpu (checkpointing OFF) | 5.45 | TBD | ~61783MB | TBD |
 | Saved by checkpointing         | —    | —   | —        | TBD |
 
+### compare_runs.py — auto-calculates everything after runs complete
+
+After each stage, run `python compare_runs.py` on the pod (MLflow server must be running). Reads all runs from MLflow and prints two tables:
+
+**Memory table** — all runs:
+```
+peak_memory_mb · steady_memory_mb · activation_memory (peak − steady)
+checkpointing savings % = (peak_OFF − peak_ON) / peak_OFF × 100%
+```
+
+**Scaling table** — DDP and FSDP only:
+```
+expected = single_gpu_throughput × world_size
+actual multiplier = run_throughput / single_gpu_throughput
+efficiency % = (actual / expected) × 100%
+```
+
+Missing runs show TBD — script works at any stage, table fills progressively as runs complete.
+
+Single GPU and Ray Train show throughput only — scaling efficiency not calculated for them (single GPU has no scaling, Ray Train uses DDP math).
+
 ### Why not Prometheus + Grafana for tracking savings %
 
 Prometheus and Grafana are designed for continuous service monitoring — scrape metrics every N seconds from a long-running service. A training run that completes in 2 minutes doesn't fit that model. Adding them here would be infrastructure for show, not because the problem requires it. Interviewers notice the difference.
