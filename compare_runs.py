@@ -13,7 +13,7 @@ RUN_NAMES = [
     "ray-train-4gpu",
 ]
 
-MAX_METRICS = ["forward_peak_mb", "peak_memory_mb"]   # take max across all steps
+MAX_METRICS = ["forward_peak_mb", "peak_memory_mb", "activation_mb"]   # take max across all steps
 LAST_METRICS = ["samples_per_sec", "gpu_memory_mb"]   # take last (stable across steps)
 
 
@@ -58,16 +58,16 @@ def print_table(results):
 
     # Memory table
     print("\n--- Memory (MB) ---")
-    print(f"{'Run':<35} {'fwd_peak_mb':>14} {'steady_mb':>12} {'activation_mem':>16}")
-    print("-" * 79)
+    print(f"{'Run':<35} {'fwd_peak_mb':>14} {'steady_mb':>12} {'activation_mb':>14}")
+    print("-" * 77)
     for name in RUN_NAMES:
         if name not in results:
             continue
         m = results[name]["metrics"]
         peak = m.get("forward_peak_mb") or m.get("peak_memory_mb")
         steady = m.get("gpu_memory_mb")
-        activation = (peak - steady) if peak and steady else None
-        print(f"{name:<35} {fmt(peak):>14} {fmt(steady):>12} {fmt(activation):>16}")
+        activation = m.get("activation_mb")
+        print(f"{name:<35} {fmt(peak):>14} {fmt(steady):>12} {fmt(activation):>14}")
 
     # Peak memory checkpointing comparison
     peak_on = results.get("single-gpu", {}).get("metrics", {}).get("forward_peak_mb")

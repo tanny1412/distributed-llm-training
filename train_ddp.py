@@ -79,18 +79,20 @@ def train():
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
 
-        torch.cuda.reset_peak_memory_stats()
         optimizer.zero_grad()
+        torch.cuda.reset_peak_memory_stats()
+        baseline_mb = torch.cuda.memory_allocated() / 1024**2
 
         outputs = model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=labels,
         )
+        forward_peak_mb = torch.cuda.max_memory_allocated() / 1024**2
+        activation_mb = forward_peak_mb - baseline_mb
 
         loss = outputs.loss
         loss.backward()       # DDP all-reduces gradients automatically here
-        peak_mb = torch.cuda.max_memory_allocated() / 1024**2
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
@@ -101,11 +103,13 @@ def train():
                 "loss": loss.item(),
                 "samples_per_sec": tracker.samples_per_sec(),
                 "gpu_memory_mb": gpu_memory_mb(),
-                "peak_memory_mb": peak_mb,
+                "forward_peak_mb": forward_peak_mb,
+                "activation_mb": activation_mb,
             }, step=step)
             print(f"step {step} | loss {loss.item():.4f} | "
                   f"{tracker.samples_per_sec():.2f} samples/sec | "
-                  f"steady {gpu_memory_mb():.0f} MB | peak {peak_mb:.0f} MB")
+                  f"steady {gpu_memory_mb():.0f} MB | "
+                  f"fwd_peak {forward_peak_mb:.0f} MB | activations {activation_mb:.0f} MB")
 
         step += 1
 
