@@ -13,7 +13,15 @@ RUN_NAMES = [
     "ray-train-4gpu",
 ]
 
-METRICS = ["samples_per_sec", "peak_memory_mb", "gpu_memory_mb"]
+MAX_METRICS = ["forward_peak_mb", "peak_memory_mb"]   # take max across all steps
+LAST_METRICS = ["samples_per_sec", "gpu_memory_mb"]   # take last (stable across steps)
+
+
+def get_metric_max(client, run_id, metric):
+    history = client.get_metric_history(run_id, metric)
+    if not history:
+        return None
+    return max(h.value for h in history)
 
 
 def get_runs(experiment_name):
@@ -31,7 +39,11 @@ def get_runs(experiment_name):
     results = {}
     for run in runs:
         name = run.data.tags.get("mlflow.runName", run.info.run_id)
-        metrics = {m: run.data.metrics.get(m) for m in METRICS}
+        metrics = {}
+        for m in LAST_METRICS:
+            metrics[m] = run.data.metrics.get(m)
+        for m in MAX_METRICS:
+            metrics[m] = get_metric_max(client, run.info.run_id, m)
         params = run.data.params
         results[name] = {"metrics": metrics, "params": params}
     return results
@@ -46,20 +58,20 @@ def print_table(results):
 
     # Memory table
     print("\n--- Memory (MB) ---")
-    print(f"{'Run':<35} {'peak_memory_mb':>16} {'steady_memory_mb':>18} {'activation_mem':>16}")
-    print("-" * 87)
+    print(f"{'Run':<35} {'fwd_peak_mb':>14} {'steady_mb':>12} {'activation_mem':>16}")
+    print("-" * 79)
     for name in RUN_NAMES:
         if name not in results:
             continue
         m = results[name]["metrics"]
-        peak = m.get("peak_memory_mb")
+        peak = m.get("forward_peak_mb") or m.get("peak_memory_mb")
         steady = m.get("gpu_memory_mb")
         activation = (peak - steady) if peak and steady else None
-        print(f"{name:<35} {fmt(peak):>16} {fmt(steady):>18} {fmt(activation):>16}")
+        print(f"{name:<35} {fmt(peak):>14} {fmt(steady):>12} {fmt(activation):>16}")
 
     # Peak memory checkpointing comparison
-    peak_on = results.get("single-gpu", {}).get("metrics", {}).get("peak_memory_mb")
-    peak_off = results.get("single-gpu-no-checkpointing", {}).get("metrics", {}).get("peak_memory_mb")
+    peak_on = results.get("single-gpu", {}).get("metrics", {}).get("forward_peak_mb")
+    peak_off = results.get("single-gpu-no-checkpointing", {}).get("metrics", {}).get("forward_peak_mb")
     if peak_on and peak_off:
         savings_pct = (peak_off - peak_on) / peak_off * 100
         print(f"\n  Checkpointing saves {savings_pct:.1f}% peak memory ({peak_off:.0f}MB → {peak_on:.0f}MB)")
