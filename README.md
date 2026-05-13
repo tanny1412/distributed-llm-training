@@ -79,6 +79,15 @@ Total without tricks: well over 24GB. This is the problem each stage solves.
 
 `gpu_memory_mb` = steady-state after optimizer.step() (activations already freed). `peak_memory_mb` = right after backward() (activations still in HBM). `peak - steady = activation memory`.
 
+**GPU sizing decision framework:**
+```
+checkpointing OFF → peak = X GB   (GPU needed without tricks)
+checkpointing ON  → peak = Y GB   (GPU needed with checkpointing)
+savings % = (X - Y) / X × 100%
+```
+If X = 70GB → need A100 80GB. If Y = 45GB → can drop to A6000 48GB or L40S 48GB (cheaper/hr).
+Cost of dropping down: 18% throughput penalty. Worth it for cost-sensitive training, not for time-sensitive.
+
 | Backend | GPUs | Grad Checkpointing | samples/sec | Scaling eff. | steady_mem/rank | peak_mem/rank | activation_mem |
 |---------|------|--------------------|-------------|--------------|-----------------|---------------|----------------|
 | Single GPU | 1 | ON  | 4.61 | — | 61783MB | TBD | TBD |

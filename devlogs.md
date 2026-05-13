@@ -283,6 +283,24 @@ peak (checkpointing ON)  → minimum GPU HBM needed with checkpointing
 
 Real decision: if checkpointing OFF peaks at 70GB → need 80GB GPU (A100 SXM). If checkpointing ON brings peak to 45GB → can use a 48GB GPU (A6000) which is cheaper. The throughput penalty (18%) is the price you pay for the cheaper hardware.
 
+**The decision framework:**
+```
+run checkpointing OFF → peak = X GB  (what you need without tricks)
+run checkpointing ON  → peak = Y GB  (what you need with checkpointing)
+
+savings % = (X - Y) / X × 100%
+```
+
+Then look at GPU tiers:
+```
+if X = 70GB → need A100 80GB
+if Y = 45GB → can drop to A6000 48GB or L40S 48GB  ← cheaper per hour
+```
+
+The savings % tells you whether the GPU downgrade is possible. You already know the cost: 18% throughput penalty. So the decision becomes:
+
+"Checkpointing saves Z% peak memory. That lets us use a cheaper GPU. We pay 18% in throughput for that. Worth it or not depends on the job — cost-sensitive training takes the cheaper GPU, time-sensitive training keeps the faster one."
+
 Interview line: "We tracked peak memory specifically for GPU sizing decisions. Steady-state memory tells you nothing about OOM risk — a run can crash mid-backward even if steady-state would fit. Peak right after backward is the true ceiling."
 
 Why the difference in samples/sec:
