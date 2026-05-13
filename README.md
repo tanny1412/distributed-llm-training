@@ -65,11 +65,19 @@ savings % = (peak_OFF - peak_ON) / peak_OFF × 100%
 ```
 If a cheaper GPU tier fits `peak_ON`, checkpointing pays off. Cost: 18% throughput penalty.
 
-| Run | samples/sec | steady_mem | peak_mem | activation_mem |
-|-----|-------------|------------|----------|----------------|
-| Single GPU (ckpt ON)  | 4.61 | 61783MB | TBD | TBD |
-| Single GPU (ckpt OFF) | 5.45 | 61783MB | TBD | TBD |
-| Saved by checkpointing | -18% throughput | — | — | TBD |
+Three metrics tracked per step — `activation_mb = fwd_peak - baseline` isolates pure activation cost:
+```
+baseline  = memory after zero_grad()     = weights + optimizer states (~46467MB)
+fwd_peak  = memory after forward()       = baseline + activations
+activation_mb = fwd_peak - baseline      = pure activation memory
+steady    = memory after optimizer.step()= weights + optimizer states + gradients (~61783MB)
+```
+
+| Run | samples/sec | steady_mb | fwd_peak_mb | activation_mb |
+|-----|-------------|-----------|-------------|---------------|
+| Single GPU (ckpt ON)  | TBD | 61783MB | 49549MB | 3082MB |
+| Single GPU (ckpt OFF) | TBD | 61783MB | TBD     | TBD    |
+| Saved by checkpointing | — | — | — | TBD |
 
 ---
 

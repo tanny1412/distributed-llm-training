@@ -276,13 +276,34 @@ checkpointing ON  → activation_mb small  (most activations discarded, only che
 checkpointing OFF → activation_mb large  (all 32 layers stored simultaneously)
 ```
 
-Results after re-running both versions:
+### Memory at each moment — complete picture (measured, RTX PRO 6000, batch=4, seq=512)
+
+```
+zero_grad()       HBM: weights + optimizer states = 46467MB  (baseline)
+                       weights          ~16GB
+                       optimizer states ~32GB  (AdamW: momentum + variance = 2× weights)
+
+forward()         HBM: baseline + activations
+fwd_peak          = 49549MB
+activation_mb     = fwd_peak - baseline = 3082MB   (checkpointing ON)
+
+backward()        activations consumed layer by layer → gradients created
+optimizer.step()  weights updated
+
+steady            = 61783MB = weights + optimizer states + gradients
+                  = 46467MB + 15316MB gradients
+                  gradients ≈ 16GB (same shape as weights) ✓
+```
+
+Why optimizer states are 2× weights: AdamW tracks momentum (first moment) and variance (second moment) per parameter. Two extra copies of the full weight tensor = ~32GB for 8B model in BF16.
+
+Results (checkpointing OFF TBD after next run):
 
 | Run | samples/sec | steady_mb | fwd_peak_mb | activation_mb |
 |-----|-------------|-----------|-------------|---------------|
-| single-gpu (checkpointing ON)  | TBD | ~61783MB | TBD | TBD |
-| single-gpu (checkpointing OFF) | TBD | ~61783MB | TBD | TBD |
-| Saved by checkpointing         | —   | —        | —   | TBD |
+| single-gpu (checkpointing ON)  | TBD | 61783MB | 49549MB | 3082MB |
+| single-gpu (checkpointing OFF) | TBD | 61783MB | TBD     | TBD    |
+| Saved by checkpointing         | —   | —       | —       | TBD    |
 
 ### FSDP batch size experiment — recovering throughput with freed memory
 
