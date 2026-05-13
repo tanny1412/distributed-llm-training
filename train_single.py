@@ -27,7 +27,7 @@ def train():
         device_map="cuda",
         use_cache=False,
     )
-    # model.gradient_checkpointing_enable()
+    model.gradient_checkpointing_enable()
 
     dataset = AlpacaDataset(tokenizer, max_length=MAX_LENGTH)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
@@ -37,13 +37,13 @@ def train():
     tracker = ThroughputTracker()
 
     mlflow.set_experiment("distributed-training")
-    with mlflow.start_run(run_name="single-gpu-no-checkpointing"):
+    with mlflow.start_run(run_name="single-gpu"):
         mlflow.log_params({
             "model": MODEL_ID,
             "batch_size": BATCH_SIZE,
             "max_length": MAX_LENGTH,
             "lr": LR,
-            "gradient_checkpointing": False,
+            "gradient_checkpointing": True,
         })
 
         model.train()
@@ -57,6 +57,7 @@ def train():
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
 
+            torch.cuda.reset_peak_memory_stats()
             optimizer.zero_grad()
 
             outputs = model(
@@ -67,6 +68,7 @@ def train():
 
             loss = outputs.loss
             loss.backward()
+            peak_memory_mb = torch.cuda.max_memory_allocated() / 1024**2
             optimizer.step()
 
             tracker.update(input_ids.shape[0])
@@ -76,10 +78,11 @@ def train():
                     "loss": loss.item(),
                     "samples_per_sec": tracker.samples_per_sec(),
                     "gpu_memory_mb": gpu_memory_mb(),
+                    "peak_memory_mb": peak_memory_mb,
                 }, step=step)
                 print(f"step {step} | loss {loss.item():.4f} | "
                       f"{tracker.samples_per_sec():.2f} samples/sec | "
-                      f"{gpu_memory_mb():.0f} MB")
+                      f"steady {gpu_memory_mb():.0f} MB | peak {peak_memory_mb:.0f} MB")
 
             step += 1
 
