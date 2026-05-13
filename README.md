@@ -1,112 +1,175 @@
 # distributed-llm-training
 
-Fine-tuned Llama-3-8B across 4× A10G GPUs. Benchmarked Single GPU → DDP → FSDP → Ray Train.
-Measured samples/sec, scaling efficiency, and GPU memory per rank at each stage.
+Fine-tune Llama-3-8B across multiple GPUs. Benchmark Single GPU → DDP → FSDP → Ray Train.
+Measure peak memory, steady-state memory, throughput, and scaling efficiency at each stage.
 
 ---
 
-## Why this project
+## The Problem
 
-Llama-3-8B in FP16 = 16GB. An A10G has 24GB. That leaves 8GB for activations, gradients, and optimizer states — not enough for a standard training run.
+Training an 8B parameter model requires more than model weights. Four things live in HBM simultaneously:
 
-**The memory math:**
+| What | Size | Notes |
+|------|------|-------|
+| Weights | 16GB | 8B params × 2 bytes (BF16) |
+| Gradients | 16GB | Same shape as weights, always |
+| Optimizer states | 32GB | AdamW: momentum + variance per param |
+| Activations | varies | Depends on batch size and sequence length |
 
-| Precision | Parameters | Bytes/param | Model size |
-|-----------|------------|-------------|------------|
-| FP32      | 8B         | 4 bytes     | 32GB       |
-| FP16      | 8B         | 2 bytes     | 16GB       |
+Total without tricks: **64GB+ before activations**. A single 24GB GPU cannot run full fine-tuning of an 8B model. Each stage in this project is a response to that constraint.
 
-FP32 doesn't fit on a single A10G. FP16 fits but leaves almost no room.
+---
 
-**What each backend costs:**
+## Two Phases
 
-| What          | Size   | Why                                              |
-|---------------|--------|--------------------------------------------------|
-| Model weights | 16GB   | 8B params × 2 bytes (FP16)                       |
-| Gradients     | ~16GB  | Same shape as weights                            |
-| Optimizer states (AdamW) | ~32GB | Momentum + variance per param = 2× model size |
-| Activations   | varies | Depends on batch size and sequence length        |
+### Phase 1 — OOM Story (4× RTX 4090, 24GB each, Vast.ai)
 
-Total without tricks: well over 24GB. This is the problem each stage solves.
+Intentionally hit every failure mode before solving it. The errors are the story.
+
+| Backend | GPUs | Result | Root Cause |
+|---------|------|--------|------------|
+| Single GPU | 1 | OOM (forward) | Activations alone fill 24GB HBM |
+| Single GPU + grad checkpointing | 1 | OOM (optimizer.step) | AdamW states created lazily: +32GB on first step |
+| DDP | 4 | OOM (init) | Gradient bucket pre-allocated = model size. 16GB + 16GB = 32GB before step 0 |
+| FSDP (hardcoded import) | 4 | 22GB/rank | `isinstance()` failed on newer transformers — no sharding happened |
+| FSDP (runtime detection) | 4 | OOM (backward) | Sharding worked (11GB/rank) but activations still 13GB/rank |
+| FSDP + grad checkpointing | 4 | loss NaN | FP16 overflow in forward pass — SiLU with large inputs → inf × 0 = NaN |
+| FSDP + BF16 | 4 | ✓ 0.97 samples/sec | Stable. 15837MB/rank. BF16 has same exponent range as FP32. |
+| Ray Train | 4 | OOM (init) | Wraps DDP — same gradient bucket pre-allocation |
+
+**4 GPUs with FSDP + BF16 + gradient checkpointing is the minimum configuration that fits.**
+
+### Phase 2 — Benchmarks (4× A100 SXM 80GB, NVLink, RunPod)
+
+With enough HBM, measure what actually matters: throughput, scaling efficiency, and real peak memory.
 
 ---
 
 ## Stages
 
-### Stage 1 — Single GPU Baseline
-- Llama-3-8B on 1× RTX 4090 (24GB), FP16
-- Without gradient checkpointing → OOM during forward pass (activations fill 24GB)
-- With gradient checkpointing + batch_size=1 → still OOM on backward
-- Root cause: 16GB weights + 16GB gradients = 32GB minimum, exceeds 24GB HBM
-- Conclusion: full fine-tuning of 8B on a single 24GB GPU is not feasible without QLoRA/LoRA
+### Stage 1 — Single GPU: Peak Memory Experiment
 
-### Stage 2 — PyTorch DDP
-- Full model replicated on all 4 GPUs (~16GB/rank)
-- Crashed at `DDP.__init__` — pre-allocates gradient buffer same size as model (15GB). 15GB weights + 15GB buffer = 30GB > 24GB before training even starts.
+**Question:** What is the actual HBM ceiling during a training step — not after it?
 
-### Stage 3 — PyTorch FSDP
-- Model weights + gradients + optimizer states sharded across 4 GPUs
-- 5 attempts before stable training:
-  1. Hardcoded `LlamaDecoderLayer` import → FSDP didn't shard (22GB/rank). Newer transformers wraps the class — `isinstance()` always failed.
-  2. Fixed with `type(model.model.layers[0])` runtime detection → 11GB/rank, sharding confirmed
-  3. No gradient checkpointing → OOM on backward (activations 13GB/rank)
-  4. Added gradient checkpointing → training started but `loss nan` from step 10. FP16 overflow in forward pass.
-  5. Switched to BF16 → loss stable, training running
+Two metrics per step:
+- `steady_memory_mb` — after `optimizer.step()`. Activations already freed. Shows: weights + gradients + optimizer states.
+- `peak_memory_mb` — right after `backward()`. Activations still in HBM. Shows: weights + gradients + activations.
 
-### Stage 4 — Ray Train
-- Same DDP training, different launcher
-- No manual dist.init_process_group
+`peak - steady = activation memory`. The difference between runs = memory saved by gradient checkpointing.
+
+**GPU sizing decision:**
+```
+peak(checkpointing OFF) → minimum GPU HBM without tricks
+peak(checkpointing ON)  → minimum GPU HBM with checkpointing
+savings % = (peak_OFF - peak_ON) / peak_OFF × 100%
+```
+If a cheaper GPU tier fits `peak_ON`, checkpointing pays off. Cost: 18% throughput penalty.
+
+| Run | samples/sec | steady_mem | peak_mem | activation_mem |
+|-----|-------------|------------|----------|----------------|
+| Single GPU (ckpt ON)  | 4.61 | 61783MB | TBD | TBD |
+| Single GPU (ckpt OFF) | 5.45 | 61783MB | TBD | TBD |
+| Saved by checkpointing | -18% throughput | — | — | TBD |
+
+---
+
+### Stage 2 — DDP: Throughput Scaling
+
+**Question:** How much throughput do you gain per GPU added, and how much does all-reduce cost?
+
+DDP is **memory-bound** — every GPU holds a full copy of the model. Peak memory per rank = same as single GPU. No memory savings. The only benefit is throughput: more GPUs process more samples in parallel.
+
+Scaling efficiency measures how much communication eats into the theoretical speedup:
+```
+efficiency = (N_gpu_throughput / (N × single_gpu_throughput)) × 100%
+```
+
+1 GPU DDP skipped — identical to single GPU baseline. Single GPU result from Stage 1 is the baseline.
+
+| Run | GPUs | samples/sec | Expected | Actual multiplier | Scaling efficiency |
+|-----|------|-------------|----------|-------------------|--------------------|
+| DDP | 2 | TBD | 9.22 (2×) | TBD | TBD |
+| DDP | 4 | TBD | 18.44 (4×) | TBD | TBD |
+
+---
+
+### Stage 3 — FSDP: Memory Savings + Throughput Recovery
+
+**Question:** Does sharding free enough memory to run larger batches and recover the throughput lost to communication?
+
+FSDP shards weights + gradients + optimizer states across GPUs. Peak memory per rank drops dramatically. Gradient checkpointing OFF — sharding alone is enough on A100 80GB.
+
+**The throughput story:**
+```
+FSDP 4GPU batch=4   → lower than DDP (communication overhead, small batch)
+FSDP 4GPU batch=16  → back to ~DDP level (freed memory → bigger batch → amortizes cost)
+FSDP 2GPU batch=16  → can 2 GPUs match DDP 4 GPU throughput? (half the cost)
+```
+
+| Run | GPUs | Batch | samples/sec | peak_mem/rank | vs DDP 4GPU |
+|-----|------|-------|-------------|---------------|-------------|
+| FSDP | 4 | 4  | TBD | TBD | apples-to-apples |
+| FSDP | 4 | 16 | TBD | TBD | throughput recovery |
+| FSDP | 2 | 16 | TBD | TBD | half the GPUs, same job? |
+
+---
+
+### Stage 4 — Ray Train: Managed DDP
+
+**Question:** Same throughput as DDP — is the simpler setup worth it?
+
+Ray Train wraps DDP. Same memory math, same communication, same throughput. What changes:
+- No manual `dist.init_process_group`
+- No `MASTER_ADDR`/`MASTER_PORT` setup
 - Native HPO integration via Ray Tune
+- Multi-node coordination handled automatically
+
+| Run | GPUs | samples/sec | peak_mem/rank | vs torchrun DDP |
+|-----|------|-------------|---------------|-----------------|
+| Ray Train | 4 | TBD | TBD | TBD |
 
 ---
 
-## Benchmark Results
+## How to Run
 
-| Backend       | GPUs | samples/sec | Scaling eff. | Mem/rank  | Notes                          |
-|---------------|------|-------------|--------------|-----------|--------------------------------|
-| Single GPU    | 1    | OOM         | —            | >24GB     | 16GB weights + 16GB grads > 24GB HBM |
-| DDP           | 4    | OOM         | —            | >24GB     | Gradient bucket alloc at init = 30GB/rank |
-| FSDP          | 1    | OOM         | —            | >24GB     | NO_SHARD fallback = same as single GPU |
-| FSDP          | 2    | OOM         | —            | >24GB     | 8GB shard + 16GB optimizer states = 42GB/rank |
-| FSDP          | 4    | 0.97        | —            | 15837MB   | Minimum GPUs that fit. BF16, grad checkpointing |
-| Ray Train DDP | 4    | OOM         | —            | >24GB     | Same DDP OOM — gradient bucket at init |
+```bash
+# Single GPU
+python train_single.py
 
-*A10G results above are from the OOM story. Full throughput numbers below from A100 runs.*
+# DDP
+torchrun --nproc_per_node=2 train_ddp.py
+torchrun --nproc_per_node=4 train_ddp.py
 
----
+# FSDP (change BATCH_SIZE in script between runs)
+torchrun --nproc_per_node=4 train_fsdp.py   # batch=4
+torchrun --nproc_per_node=4 train_fsdp.py   # batch=16
+torchrun --nproc_per_node=2 train_fsdp.py   # batch=16
 
-## A100 Benchmark Results (4× A100 SXM 80GB, NVLink, RunPod)
+# Ray Train
+python train_ray.py
 
-`gpu_memory_mb` = steady-state after optimizer.step() (activations already freed). `peak_memory_mb` = right after backward() (activations still in HBM). `peak - steady = activation memory`.
-
-**GPU sizing decision framework:**
+# Compare all results
+python compare_runs.py
 ```
-checkpointing OFF → peak = X GB   (GPU needed without tricks)
-checkpointing ON  → peak = Y GB   (GPU needed with checkpointing)
-savings % = (X - Y) / X × 100%
-```
-If X = 70GB → need A100 80GB. If Y = 45GB → can drop to A6000 48GB or L40S 48GB (cheaper/hr).
-Cost of dropping down: 18% throughput penalty. Worth it for cost-sensitive training, not for time-sensitive.
 
-| Backend | GPUs | Grad Checkpointing | samples/sec | Scaling eff. | steady_mem/rank | peak_mem/rank | activation_mem |
-|---------|------|--------------------|-------------|--------------|-----------------|---------------|----------------|
-| Single GPU | 1 | ON  | 4.61 | — | 61783MB | TBD | TBD |
-| Single GPU | 1 | OFF | 5.45 | — | 61783MB | TBD | TBD |
-| Saved by checkpointing | — | — | -18% throughput | — | — | — | TBD |
-| DDP        | 4 | ON  | TBD  | TBD | TBD   | |
-| FSDP       | 4 | ON  | TBD  | TBD | TBD   | |
-| Ray Train  | 4 | ON  | TBD  | TBD | TBD   | |
+MLflow server (run before training, SSH with port forwarding `-L 8080:localhost:8080`):
+```bash
+mlflow server --host 0.0.0.0 --port 8080
+```
 
 ---
 
 ## Dataset
 
-Alpaca — 52k instruction-response pairs (Stanford, 2023). Fine-tuned with response-only loss masking: loss computed on response tokens only, instruction tokens masked to -100.
+Alpaca — 52k instruction-response pairs (Stanford, 2023). Response-only loss masking: loss computed on response tokens only, instruction tokens masked to `-100`.
+
+---
 
 ## Stack
 
 - PyTorch 2.2+ (DDP, FSDP built-in)
 - HuggingFace Transformers + Datasets
-- MLflow (experiment tracking)
-- Ray Train + Ray Tune (Stage 4)
-- Vast.ai 4× A10G (~$1.40/hr)
+- MLflow (experiment tracking + run comparison)
+- Ray Train (Stage 4)
+- Vast.ai 4× RTX 4090 24GB (OOM story)
+- RunPod 4× A100 SXM 80GB NVLink (benchmarks)
