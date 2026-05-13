@@ -1238,6 +1238,18 @@ batch=16: pay the SAME communication cost → 16 samples of work per GPU
 
 Same tax, 4× the output. The freed HBM from sharding is what makes batch=16 possible — DDP couldn't run batch=16 because the full model already filled HBM. FSDP freed ~46GB per rank, that space goes to activations for a larger batch.
 
+**Why scaling efficiency % is misleading for FSDP:**
+
+Efficiency = actual / (N × single_gpu) assumes single GPU could run the same workload. It can't — single GPU OOMs at batch=16. Comparing FSDP batch=16 against `4 × single_gpu_batch4` is apples to oranges.
+
+The right comparison for FSDP is vs DDP — same hardware, same 4 GPUs:
+```
+DDP  4 GPU batch=4:  9.16 samples/sec  (HBM full, stuck at batch=4)
+FSDP 4 GPU batch=16: TBD               (HBM freed by sharding → room for batch=16)
+```
+
+If FSDP batch=16 > 9.16 samples/sec, that's the real win: same 4 GPUs, more throughput, AND 75% less memory per rank. FSDP's point isn't efficiency — it's enabling batch sizes DDP physically can't run, and using that to recover throughput.
+
 ### Stage 4 — Ray Train (complete)
 - [x] train_ray.py — OOM at DDP.__init__, same as torchrun DDP
 - Same gradient bucket pre-allocation problem. Ray Train wraps DDP, doesn't change the memory math.
