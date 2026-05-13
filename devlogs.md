@@ -1227,6 +1227,17 @@ FSDP is slower than DDP at same batch — expected. DDP does 1 all-reduce per st
 
 This is the setup for batch=16 — 75% of HBM just freed. Now use it.
 
+**Why batch=16 should recover throughput:**
+
+The communication cost is fixed per step regardless of batch size. 64 AllGather + ReduceScatter rounds happen whether you process 4 or 16 samples per GPU per step.
+
+```
+batch=4:  pay full communication cost → 4 samples of work per GPU
+batch=16: pay the SAME communication cost → 16 samples of work per GPU
+```
+
+Same tax, 4× the output. The freed HBM from sharding is what makes batch=16 possible — DDP couldn't run batch=16 because the full model already filled HBM. FSDP freed ~46GB per rank, that space goes to activations for a larger batch.
+
 ### Stage 4 — Ray Train (complete)
 - [x] train_ray.py — OOM at DDP.__init__, same as torchrun DDP
 - Same gradient bucket pre-allocation problem. Ray Train wraps DDP, doesn't change the memory math.
