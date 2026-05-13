@@ -39,7 +39,7 @@ Intentionally hit every failure mode before solving it. The errors are the story
 
 **4 GPUs with FSDP + BF16 + gradient checkpointing is the minimum configuration that fits.**
 
-### Phase 2 — Benchmarks (4× A100 SXM 80GB, NVLink, RunPod)
+### Phase 2 — Benchmarks (4× RTX PRO 6000 96GB, PCIe 5.0, Vast.ai)
 
 With enough HBM, measure what actually matters: throughput, scaling efficiency, and real peak memory.
 
@@ -75,8 +75,8 @@ steady    = memory after optimizer.step()= weights + optimizer states + gradient
 
 | Run | samples/sec | steady_mb | fwd_peak_mb | activation_mb |
 |-----|-------------|-----------|-------------|---------------|
-| Single GPU (ckpt ON)  | TBD | 61783MB | 49549MB | 3082MB |
-| Single GPU (ckpt OFF) | TBD | 61783MB | TBD     | TBD    |
+| Single GPU (ckpt ON)  | 6.16 | 61783MB | 49549MB | 3082MB |
+| Single GPU (ckpt OFF) | TBD  | 61783MB | TBD     | TBD    |
 | Saved by checkpointing | — | — | — | TBD |
 
 ---
@@ -94,10 +94,12 @@ efficiency = (N_gpu_throughput / (N × single_gpu_throughput)) × 100%
 
 1 GPU DDP skipped — identical to single GPU baseline. Single GPU result from Stage 1 is the baseline.
 
+Baseline: 6.16 samples/sec (single GPU, ckpt ON, RTX PRO 6000)
+
 | Run | GPUs | samples/sec | Expected | Actual multiplier | Scaling efficiency |
 |-----|------|-------------|----------|-------------------|--------------------|
-| DDP | 2 | TBD | 9.22 (2×) | TBD | TBD |
-| DDP | 4 | TBD | 18.44 (4×) | TBD | TBD |
+| DDP | 2 | TBD | 12.32 (2×) | TBD | TBD |
+| DDP | 4 | TBD | 24.64 (4×) | TBD | TBD |
 
 ---
 
@@ -105,7 +107,7 @@ efficiency = (N_gpu_throughput / (N × single_gpu_throughput)) × 100%
 
 **Question:** Does sharding free enough memory to run larger batches and recover the throughput lost to communication?
 
-FSDP shards weights + gradients + optimizer states across GPUs. Peak memory per rank drops dramatically. Gradient checkpointing OFF — sharding alone is enough on A100 80GB.
+FSDP shards weights + gradients + optimizer states across GPUs. Peak memory per rank drops dramatically. Gradient checkpointing OFF — sharding alone is enough on RTX PRO 6000 96GB.
 
 **The throughput story:**
 ```
