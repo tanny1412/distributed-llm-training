@@ -75,9 +75,9 @@ steady    = memory after optimizer.step()= weights + optimizer states + gradient
 
 | Run | samples/sec | steady_mb | fwd_peak_mb | activation_mb |
 |-----|-------------|-----------|-------------|---------------|
-| Single GPU (ckpt ON)  | 6.16 | 61783MB | 49549MB | 3082MB |
-| Single GPU (ckpt OFF) | TBD  | 61783MB | TBD     | TBD    |
-| Saved by checkpointing | — | — | — | TBD |
+| Single GPU (ckpt ON)  | 6.25 | 61783MB | 49549MB | 3082MB |
+| Single GPU (ckpt OFF) | 7.16 | 61783MB | 62421MB | 15954MB |
+| Saved by checkpointing | +14.6% slower | — | 12872MB (20.6%) | 12872MB (80.7%) |
 
 ---
 
@@ -94,12 +94,12 @@ efficiency = (N_gpu_throughput / (N × single_gpu_throughput)) × 100%
 
 1 GPU DDP skipped — identical to single GPU baseline. Single GPU result from Stage 1 is the baseline.
 
-Baseline: 6.16 samples/sec (single GPU, ckpt ON, RTX PRO 6000)
+Baseline: 6.25 samples/sec (single GPU, ckpt ON, RTX PRO 6000)
 
 | Run | GPUs | samples/sec | Expected | Actual multiplier | Scaling efficiency |
 |-----|------|-------------|----------|-------------------|--------------------|
-| DDP | 2 | TBD | 12.32 (2×) | TBD | TBD |
-| DDP | 4 | TBD | 24.64 (4×) | TBD | TBD |
+| DDP | 2 | TBD | 12.50 (2×) | TBD | TBD |
+| DDP | 4 | TBD | 25.00 (4×) | TBD | TBD |
 
 ---
 

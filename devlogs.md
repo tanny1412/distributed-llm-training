@@ -203,14 +203,14 @@ Discards activations after the forward pass, recomputes them during backprop.
 
 Gradient checkpointing is not free. It trades memory for compute. On hardware where memory is the binding constraint, it's mandatory. On hardware where memory is abundant, it's a pure throughput tax.
 
-**A100 SXM 80GB experiment** — same model, same code, two runs:
+**RTX PRO 6000 96GB experiment** — same model, same code, two runs:
 
 | Run | Checkpointing | samples/sec | gpu_memory_mb |
 |-----|--------------|-------------|---------------|
-| single-gpu | ON  | 4.61 | 61783MB |
-| single-gpu-no-checkpointing | OFF | 5.45 | 61783MB |
+| single-gpu | ON  | 6.25 | 61783MB |
+| single-gpu-no-checkpointing | OFF | 7.16 | 61783MB |
 
-**Speedup**: 18.2% faster without checkpointing. Less than the theoretical ~30% because at 80GB scale other factors (weight loading, memory bandwidth) partially limit throughput too.
+**Speedup**: 14.6% faster without checkpointing. Less than the theoretical ~30% because at 96GB scale other factors (weight loading, memory bandwidth) partially limit throughput too.
 
 **Memory identical**: 61783MB in both runs. Not because checkpointing doesn't save activation memory — it does. But because of *when* we measure.
 
@@ -297,13 +297,13 @@ steady            = 61783MB = weights + optimizer states + gradients
 
 Why optimizer states are 2× weights: AdamW tracks momentum (first moment) and variance (second moment) per parameter. Two extra copies of the full weight tensor = ~32GB for 8B model in BF16.
 
-Results (checkpointing OFF TBD after next run):
+Results (RTX PRO 6000 96GB, batch=4, seq=512):
 
 | Run | samples/sec | steady_mb | fwd_peak_mb | activation_mb |
 |-----|-------------|-----------|-------------|---------------|
-| single-gpu (checkpointing ON)  | TBD | 61783MB | 49549MB | 3082MB |
-| single-gpu (checkpointing OFF) | TBD | 61783MB | TBD     | TBD    |
-| Saved by checkpointing         | —   | —       | —       | TBD    |
+| single-gpu (checkpointing ON)  | 6.25 | 61783MB | 49549MB | 3082MB  |
+| single-gpu (checkpointing OFF) | 7.16 | 61783MB | 62421MB | 15954MB |
+| Saved by checkpointing         | −14.6% throughput | — | 12872MB | 12872MB (80.7%) |
 
 ### FSDP batch size experiment — recovering throughput with freed memory
 
@@ -1202,10 +1202,13 @@ Not in our project scope (200 steps = minutes), but know it cold for interviews.
 
 ## Benchmark Table (fill in after GPU runs)
 
-| Backend       | GPUs | samples/sec | Scaling eff. | Mem/rank  | Notes                          |
-|---------------|------|-------------|--------------|-----------|--------------------------------|
-| Single GPU    | 1    | —           | 100%         | ~18–20GB  | Grad checkpointing required    |
-| DDP           | 2    | —           | —%           | ~18–20GB  | Still needs grad checkpointing |
-| DDP           | 4    | —           | —%           | ~18–20GB  | Target: 80–88% efficiency      |
-| FSDP          | 4    | —           | —%           | ~4–6GB    | No checkpointing, larger batch |
-| Ray Train DDP | 4    | —           | ~DDP%        | ~18–20GB  | Simpler setup vs torchrun      |
+| Backend       | GPUs | samples/sec | Scaling eff. | fwd_peak/rank | Notes                          |
+|---------------|------|-------------|--------------|---------------|--------------------------------|
+| Single GPU    | 1    | 6.25        | baseline     | 49549MB       | Grad checkpointing ON          |
+| Single GPU    | 1    | 7.16        | —            | 62421MB       | Grad checkpointing OFF         |
+| DDP           | 2    | TBD         | TBD          | ~49549MB      | Same peak as single GPU        |
+| DDP           | 4    | TBD         | TBD          | ~49549MB      | Target: 80–88% efficiency      |
+| FSDP          | 4    | TBD         | TBD          | TBD           | No checkpointing, batch=4      |
+| FSDP          | 4    | TBD         | TBD          | TBD           | No checkpointing, batch=16     |
+| FSDP          | 2    | TBD         | TBD          | TBD           | No checkpointing, batch=16     |
+| Ray Train DDP | 4    | TBD         | ~DDP%        | ~49549MB      | Simpler setup vs torchrun      |
