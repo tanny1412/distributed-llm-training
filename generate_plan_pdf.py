@@ -3,7 +3,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
-from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
 
 doc = SimpleDocTemplate(
     "training_plan.pdf",
@@ -19,6 +19,50 @@ h2_style = ParagraphStyle("h2", fontSize=13, fontName="Helvetica-Bold", spaceBef
 body_style = ParagraphStyle("body", fontSize=10, fontName="Helvetica", spaceAfter=4, leading=15)
 code_style = ParagraphStyle("code", fontSize=9, fontName="Courier", spaceAfter=4, leading=13, textColor=colors.HexColor("#2d2d2d"), backColor=colors.HexColor("#f4f4f4"), leftIndent=10, rightIndent=10)
 label_style = ParagraphStyle("label", fontSize=10, fontName="Helvetica-Bold", spaceAfter=2)
+badge_style = ParagraphStyle("badge", fontSize=9, fontName="Helvetica-Bold", textColor=colors.white, alignment=TA_CENTER)
+stage_title_style = ParagraphStyle("stage_title", fontSize=12, fontName="Helvetica-Bold", textColor=colors.HexColor("#1a1a1a"))
+stage_sub_style = ParagraphStyle("stage_sub", fontSize=9, fontName="Helvetica", textColor=colors.HexColor("#555555"))
+
+STAGE_COLORS = [
+    colors.HexColor("#2563EB"),  # blue   — Stage 1
+    colors.HexColor("#16A34A"),  # green  — Stage 2
+    colors.HexColor("#9333EA"),  # purple — Stage 3
+    colors.HexColor("#EA580C"),  # orange — Stage 4
+]
+
+def stage_header(n, title, subtitle):
+    badge = Table(
+        [[Paragraph(f"Stage {n}", badge_style)]],
+        colWidths=[1.8*cm],
+    )
+    badge.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), STAGE_COLORS[n - 1]),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("ROUNDEDCORNERS", [4]),
+    ]))
+    text = Table(
+        [[Paragraph(title, stage_title_style)],
+         [Paragraph(subtitle, stage_sub_style)]],
+        colWidths=[14.2*cm],
+    )
+    text.setStyle(TableStyle([
+        ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    row = Table([[badge, text]], colWidths=[1.8*cm, 14.2*cm])
+    row.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("LINEBELOW", (0, 0), (-1, -1), 1, STAGE_COLORS[n - 1]),
+    ]))
+    return row
 
 def stage_table(rows):
     t = Table(rows, colWidths=[5.5*cm, 11*cm])
@@ -43,8 +87,9 @@ story.append(Paragraph("Llama-3-8B · 4× A100 SXM 80GB · RunPod · MLflow trac
 story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#dddddd"), spaceAfter=12))
 
 # Stage 1
-story.append(Paragraph("Stage 1 — Single GPU (Peak Memory Experiment)", h2_style))
-story.append(Paragraph("Goal: measure actual HBM needed at any moment to decide which GPU tier fits each configuration.", body_style))
+story.append(Spacer(1, 8))
+story.append(stage_header(1, "Single GPU — Peak Memory Experiment", "Goal: measure actual HBM needed at any moment to decide which GPU tier fits each configuration."))
+story.append(Spacer(1, 8))
 story.append(Spacer(1, 6))
 story.append(stage_table([
     ["Run 1", "Gradient checkpointing ON\npython train_single.py"],
@@ -58,11 +103,11 @@ story.append(Paragraph("Why peak and not steady-state:", label_style))
 story.append(Paragraph("Steady-state (after optimizer.step) only shows weights + gradients + optimizer states — activations already freed. OOMs happen during the forward→backward window. Peak memory right after backward() is the true ceiling.", body_style))
 
 # Stage 2
-story.append(Paragraph("Stage 2 — DDP (1, 2, 4 GPUs)", h2_style))
-story.append(Paragraph("Goal: measure throughput scaling and communication overhead as GPUs increase.", body_style))
-story.append(Spacer(1, 6))
+story.append(Spacer(1, 8))
+story.append(stage_header(2, "DDP — Throughput Scaling", "Goal: measure throughput gains and communication overhead as GPUs increase. Single GPU throughput from Stage 1 is the baseline."))
+story.append(Spacer(1, 8))
 story.append(stage_table([
-    ["Commands", "torchrun --nproc_per_node=1 train_ddp.py\ntorchrun --nproc_per_node=2 train_ddp.py\ntorchrun --nproc_per_node=4 train_ddp.py"],
+    ["Commands", "torchrun --nproc_per_node=2 train_ddp.py\ntorchrun --nproc_per_node=4 train_ddp.py\n(1 GPU skipped — identical to single GPU baseline)"],
     ["Batch size", "Fixed at 4 across all runs (clean comparison)"],
     ["Metrics logged", "samples_per_sec · peak_memory_mb per rank"],
     ["Key formula", "scaling efficiency = (N_gpu_throughput / (N × 1gpu_throughput)) × 100%\ntarget: 80–92% at 4 GPUs on NVLink"],
@@ -73,9 +118,9 @@ story.append(Spacer(1, 4))
 story.append(Paragraph("DDP answers: how much throughput do you gain by adding GPUs? Memory problem unchanged.", body_style))
 
 # Stage 3
-story.append(Paragraph("Stage 3 — FSDP (4 GPUs, no gradient checkpointing)", h2_style))
-story.append(Paragraph("Goal: show memory savings from sharding. Compare peak memory to DDP.", body_style))
-story.append(Spacer(1, 6))
+story.append(Spacer(1, 8))
+story.append(stage_header(3, "FSDP — Memory Savings + Throughput Recovery", "Goal: show memory drop from sharding. Then use freed memory for larger batches to recover throughput."))
+story.append(Spacer(1, 8))
 story.append(stage_table([
     ["Commands", "torchrun --nproc_per_node=4 train_fsdp.py  (batch=4)\n"
                  "torchrun --nproc_per_node=4 train_fsdp.py  (batch=16)\n"
@@ -92,9 +137,9 @@ story.append(stage_table([
 ]))
 
 # Stage 4
-story.append(Paragraph("Stage 4 — Ray Train (4 GPUs)", h2_style))
-story.append(Paragraph("Goal: compare setup complexity and throughput vs torchrun DDP.", body_style))
-story.append(Spacer(1, 6))
+story.append(Spacer(1, 8))
+story.append(stage_header(4, "Ray Train — Managed DDP", "Goal: same throughput as DDP with simpler setup. No manual process group init or MASTER_ADDR config."))
+story.append(Spacer(1, 8))
 story.append(stage_table([
     ["Command", "python train_ray.py"],
     ["Memory expectation", "Same as DDP — Ray Train wraps DDP, same memory math"],
@@ -104,6 +149,7 @@ story.append(stage_table([
 ]))
 
 # Summary table
+story.append(Spacer(1, 8))
 story.append(Paragraph("Expected Results Summary", h2_style))
 summary = [
     ["Stage", "GPUs", "Batch", "Peak Mem/rank", "Throughput", "Key finding"],
@@ -134,6 +180,7 @@ t.setStyle(TableStyle([
 story.append(t)
 
 # compare_runs.py section
+story.append(Spacer(1, 8))
 story.append(Paragraph("Tracking Results — compare_runs.py", h2_style))
 story.append(Paragraph(
     "After each stage, run compare_runs.py on the pod to auto-calculate scaling efficiency and peak memory savings. "
