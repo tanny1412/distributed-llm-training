@@ -67,7 +67,7 @@ Total without tricks: well over 24GB. This is the problem each stage solves.
 | Single GPU    | 1    | OOM         | —            | >24GB     | 16GB weights + 16GB grads > 24GB HBM |
 | DDP           | 2    | —           | —%           | ~18–20GB  | Still needs grad checkpointing |
 | DDP           | 4    | —           | —%           | ~18–20GB  | Target: 80–88% efficiency      |
-| FSDP          | 4    | —           | —%           | ~4–6GB    | No checkpointing, larger batch |
+| FSDP          | 4    | 0.97        | —%           | 15837MB   | BF16, grad checkpointing, batch=4 |
 | Ray Train DDP | 4    | —           | ~DDP%        | ~18–20GB  | Simpler setup vs torchrun      |
 
 *Numbers filled in after GPU runs on Vast.ai*
