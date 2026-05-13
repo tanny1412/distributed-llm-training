@@ -72,6 +72,7 @@ def train_func(_config):
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
 
+        torch.cuda.reset_peak_memory_stats()
         optimizer.zero_grad()
 
         outputs = model(
@@ -82,6 +83,7 @@ def train_func(_config):
 
         loss = outputs.loss
         loss.backward()
+        peak_mb = torch.cuda.max_memory_allocated() / 1024**2
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
@@ -92,12 +94,13 @@ def train_func(_config):
                 "loss": loss.item(),
                 "samples_per_sec": tracker.samples_per_sec(),
                 "gpu_memory_mb": gpu_memory_mb(),
+                "peak_memory_mb": peak_mb,
             }
             mlflow.log_metrics(metrics, step=step)
             ray_train.report(metrics)   # Ray also tracks metrics natively
             print(f"step {step} | loss {loss.item():.4f} | "
                   f"{tracker.samples_per_sec():.2f} samples/sec | "
-                  f"{gpu_memory_mb():.0f} MB")
+                  f"steady {gpu_memory_mb():.0f} MB | peak {peak_mb:.0f} MB")
 
         step += 1
 

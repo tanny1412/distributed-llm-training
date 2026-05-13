@@ -39,8 +39,9 @@ def train():
         torch_dtype=torch.bfloat16,
         use_cache=False,
     )
-    # use_reentrant=False required for FSDP compatibility
-    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    # gradient checkpointing disabled — FSDP FULL_SHARD on A100 80GB has enough HBM without it
+    # was required on 24GB A10G where sharded activations still didn't fit
+    # model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
     # detect actual decoder layer class at runtime — avoids transformers version mismatches
     decoder_layer_cls = type(model.model.layers[0])
@@ -84,7 +85,7 @@ def train():
             "max_length": MAX_LENGTH,
             "lr": LR,
             "backend": "fsdp",
-            "gradient_checkpointing": True,
+            "gradient_checkpointing": False,
         })
 
     model.train()
@@ -98,6 +99,7 @@ def train():
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
 
+        torch.cuda.reset_peak_memory_stats()
         optimizer.zero_grad()
 
         outputs = model(
@@ -108,6 +110,7 @@ def train():
 
         loss = outputs.loss
         loss.backward()
+        peak_mb = torch.cuda.max_memory_allocated() / 1024**2
         model.clip_grad_norm_(1.0)  # FSDP-aware clipping — prevents FP16 overflow
         optimizer.step()
 
@@ -118,10 +121,11 @@ def train():
                 "loss": loss.item(),
                 "samples_per_sec": tracker.samples_per_sec(),
                 "gpu_memory_mb": gpu_memory_mb(),
+                "peak_memory_mb": peak_mb,
             }, step=step)
             print(f"step {step} | loss {loss.item():.4f} | "
                   f"{tracker.samples_per_sec():.2f} samples/sec | "
-                  f"{gpu_memory_mb():.0f} MB")
+                  f"steady {gpu_memory_mb():.0f} MB | peak {peak_mb:.0f} MB")
 
         step += 1
 
