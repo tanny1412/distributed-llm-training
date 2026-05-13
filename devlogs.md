@@ -1258,6 +1258,17 @@ The question is cost, not throughput. DDP 4 GPU achieves 9.16 samples/sec — pa
 
 GPU hours cost money. The technique is free. FSDP lets you do the same job with fewer GPUs — that's the business case. Companies don't pay for the technique, they pay for the GPUs. Less GPUs + better technique = same throughput + lower bill.
 
+Real cost (Vast.ai, 4× RTX PRO 6000 S):
+```
+4 GPU: $4.205/hr
+2 GPU: $2.10/hr  (half)
+
+DDP  4 GPU: $4.205/hr → 9.16 samples/sec
+FSDP 2 GPU: $2.10/hr  → TBD samples/sec
+
+If FSDP 2 GPU matches DDP 4 GPU throughput → same job at half the cost.
+```
+
 Same 4 GPUs, same PCIe, same slow interconnect. Freed memory → bigger batch → communication cost amortized across 4× more samples per step.
 
 Steady memory barely moved: 17339 MB (batch=16) vs 15837 MB (batch=4). 4× more data per step, only 1.5GB more memory. The sharding is doing exactly what it should.
