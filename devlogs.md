@@ -1131,9 +1131,46 @@ Works regardless of transformers version. The model is already loaded on CPU bef
 Interview line: "We detected the actual decoder layer class at runtime rather than hardcoding the import — newer transformers versions restructure internals and a stale import silently breaks FSDP sharding. The symptom is 22GB/rank instead of 4GB."
 
 ### Stage 2 — PyTorch DDP
-- [ ] train_ddp.py — full model on every rank, torchrun launcher
-- [ ] Run at 1, 2, 4 GPUs — record scaling efficiency
-- [ ] Show nvidia-smi: ~16–20GB on every rank
+
+**DDP 2 GPU result: 5.46 samples/sec — lower than single GPU (6.25)**
+
+This is not a bug. It's the PCIe bottleneck showing up in data.
+
+Each step processes 8 global samples (4 per rank × 2 ranks). But the all-reduce after backward synchronizes 16GB of gradients across both GPUs over PCIe 5.0 (54GB/s). Step time more than doubled. The extra data processed per step doesn't compensate.
+
+Memory per rank:
+```
+fwd_peak:  64466MB  (vs 49549MB single GPU — +15GB gradient communication bucket)
+steady_mb: 77188MB  (vs 61783MB single GPU — same +15GB always present)
+activation_mb: 3082MB  (identical — same batch, same model, same checkpointing)
+```
+
+DDP pre-allocates a gradient bucket = full gradient size (~15GB) at `DDP.__init__`. It's present the entire run, not just during all-reduce. This is why DDP memory is higher than single GPU even though each rank holds the same model.
+
+Results:
+
+| Run | samples/sec | vs single GPU | scaling efficiency |
+|-----|-------------|---------------|-------------------|
+| Single GPU | 6.25 | baseline | — |
+| DDP 2 GPU  | 5.46 | 0.87×  | 43.5% |
+| DDP 4 GPU  | 10.66 | 1.70× | 42.6% |
+
+**Why 2 GPU is below single GPU but 4 GPU is above:**
+
+Every step is a race between two forces:
+- **Time saved** — more GPUs processing more data in parallel (linear gain)
+- **Time lost** — all-reduce communication over PCIe (grows sub-linearly with NCCL ring all-reduce)
+
+At 2 GPUs: time lost > time saved → net negative. Throughput drops below single GPU.
+At 4 GPUs: time lost < time saved → net positive. Compute parallelism finally compensates.
+
+There is a crossover point between 2 and 4 GPUs on PCIe hardware. On NVLink the crossover is at 1→2 GPUs because all-reduce is 11× faster — compute wins immediately.
+
+NCCL ring all-reduce: gradient tensor split into chunks, passed around the ring. Communication grows sub-linearly with GPU count, not proportionally. That's why 4 GPUs doesn't cost 2× the all-reduce time of 2 GPUs.
+
+Efficiency is ~43% at both 2 and 4 GPU — the PCIe bandwidth ceiling is consistent regardless of GPU count. Adding more GPUs on PCIe won't push past this ceiling.
+
+Interview line: "DDP on PCIe actually slowed us down at 2 GPUs — all-reduce overhead exceeded the parallel compute benefit. At 4 GPUs compute parallelism finally won, but efficiency was still only 43%. The bottleneck is PCIe bandwidth, not GPU compute. On NVLink the crossover happens immediately at 2 GPUs and efficiency reaches 80%+."
 
 ### Stage 3 — PyTorch FSDP (complete)
 - [x] train_fsdp.py — sharded weights/grads/optimizer states
@@ -1206,8 +1243,8 @@ Not in our project scope (200 steps = minutes), but know it cold for interviews.
 |---------------|------|-------------|--------------|---------------|--------------------------------|
 | Single GPU    | 1    | 6.25        | baseline     | 49549MB       | Grad checkpointing ON          |
 | Single GPU    | 1    | 7.16        | —            | 62421MB       | Grad checkpointing OFF         |
-| DDP           | 2    | TBD         | TBD          | ~49549MB      | Same peak as single GPU        |
-| DDP           | 4    | TBD         | TBD          | ~49549MB      | Target: 80–88% efficiency      |
+| DDP           | 2    | 5.46        | 43.5%        | 64466MB       | PCIe all-reduce bottleneck     |
+| DDP           | 4    | 10.66       | 42.6%        | 64866MB       | PCIe all-reduce bottleneck     |
 | FSDP          | 4    | TBD         | TBD          | TBD           | No checkpointing, batch=4      |
 | FSDP          | 4    | TBD         | TBD          | TBD           | No checkpointing, batch=16     |
 | FSDP          | 2    | TBD         | TBD          | TBD           | No checkpointing, batch=16     |
