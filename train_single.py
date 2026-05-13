@@ -27,7 +27,7 @@ def train():
         device_map="cuda",
         use_cache=False,
     )
-    model.gradient_checkpointing_enable()
+    # model.gradient_checkpointing_enable()
 
     dataset = AlpacaDataset(tokenizer, max_length=MAX_LENGTH)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
@@ -37,13 +37,13 @@ def train():
     tracker = ThroughputTracker()
 
     mlflow.set_experiment("distributed-training")
-    with mlflow.start_run(run_name="single-gpu"):
+    with mlflow.start_run(run_name="single-gpu-no-checkpointing"):
         mlflow.log_params({
             "model": MODEL_ID,
             "batch_size": BATCH_SIZE,
             "max_length": MAX_LENGTH,
             "lr": LR,
-            "gradient_checkpointing": True,
+            "gradient_checkpointing": False,
         })
 
         model.train()
