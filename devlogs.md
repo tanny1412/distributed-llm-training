@@ -1196,9 +1196,36 @@ Interview line: "DDP on PCIe actually slowed us down at 2 GPUs — all-reduce ov
 - Memory higher than theoretical 4GB because grad checkpointing recomputation + optimizer states peak during backward
 
 ### Stage 3 — PyTorch FSDP
-- [ ] Remove gradient checkpointing — show it fits without it
-- [ ] Show memory drop: ~18GB (DDP) → ~4–6GB (FSDP)
-- [ ] Increase batch size until OOM — compare max batch vs DDP
+
+**FSDP 4 GPU batch=4 result:**
+
+```
+steady_mb:     15837 MB per rank  (vs 77099 MB DDP, vs 61783 MB single GPU)
+fwd_peak_mb:   29965 MB per rank
+activation_mb: 17959 MB per rank  (includes temporarily AllGathered weights, not pure activations)
+samples/sec:   7.26
+```
+
+**Memory — the big story:**
+```
+Single GPU steady:  61783 MB  (everything on one GPU)
+DDP 4 GPU steady:   77099 MB  (full model + gradient bucket per rank)
+FSDP 4 GPU steady:  15837 MB  (1/4 of everything per rank) ← 75% drop
+```
+
+61783 / 4 = ~15446 ≈ 15837 MB ✓ Math checks out. Sharding works exactly as expected.
+
+15837 MB is per rank — every GPU is at this number. FSDP splits weights + gradients + optimizer states across all 4 ranks so each holds only its shard.
+
+**Throughput:**
+```
+DDP  4 GPU batch=4:  9.16 samples/sec
+FSDP 4 GPU batch=4:  7.26 samples/sec  (29.0% scaling efficiency)
+```
+
+FSDP is slower than DDP at same batch — expected. DDP does 1 all-reduce per step. FSDP does AllGather + ReduceScatter per transformer layer = 64 communication rounds per step. More communication, same slow PCIe.
+
+This is the setup for batch=16 — 75% of HBM just freed. Now use it.
 
 ### Stage 4 — Ray Train (complete)
 - [x] train_ray.py — OOM at DDP.__init__, same as torchrun DDP
@@ -1262,7 +1289,7 @@ Not in our project scope (200 steps = minutes), but know it cold for interviews.
 | Single GPU    | 1    | 7.16        | —            | 62421MB       | Grad checkpointing OFF         |
 | DDP           | 2    | 5.48        | 43.8%        | 64866MB       | PCIe all-reduce bottleneck     |
 | DDP           | 4    | 9.16        | 36.6%        | 64866MB       | Efficiency drops as GPUs added |
-| FSDP          | 4    | TBD         | TBD          | TBD           | No checkpointing, batch=4      |
+| FSDP          | 4    | 7.26        | 29.0%        | 29965MB       | No checkpointing, batch=4      |
 | FSDP          | 4    | TBD         | TBD          | TBD           | No checkpointing, batch=16     |
 | FSDP          | 2    | TBD         | TBD          | TBD           | No checkpointing, batch=16     |
 | Ray Train DDP | 4    | TBD         | ~DDP%        | ~49549MB      | Simpler setup vs torchrun      |
