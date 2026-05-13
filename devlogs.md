@@ -268,6 +268,29 @@ Results after re-running both versions:
 | single-gpu (checkpointing OFF) | 5.45 | TBD | ~61783MB | TBD |
 | Saved by checkpointing         | —    | —   | —        | TBD |
 
+### FSDP batch size experiment — recovering throughput with freed memory
+
+FSDP sharding frees HBM that DDP couldn't use. The freed space lets you run larger batches. Larger batches amortize the communication overhead (AllGather + ReduceScatter is a fixed cost per step — spread over more samples it hurts less per sample).
+
+**The story:**
+```
+DDP  4 GPUs, batch=4  → X samples/sec  (memory full, can't go higher)
+FSDP 4 GPUs, batch=4  → lower than DDP (communication overhead, same small batch)
+FSDP 4 GPUs, batch=16 → back to ~X or higher (bigger batch amortizes communication cost)
+FSDP 2 GPUs, batch=16 → can 2 GPUs match DDP 4 GPU throughput?
+```
+
+The last line is the real argument: same throughput as DDP at 4 GPUs, using only 2 GPUs. Half the cost.
+
+**FSDP run plan:**
+```
+torchrun --nproc_per_node=4 train_fsdp.py  (batch=4)   ← apples-to-apples vs DDP
+torchrun --nproc_per_node=4 train_fsdp.py  (batch=16)  ← recover throughput with freed memory
+torchrun --nproc_per_node=2 train_fsdp.py  (batch=16)  ← can 2 GPUs match DDP 4 GPU throughput?
+```
+
+**Interview line**: "FSDP isn't just a memory tool. By freeing HBM through sharding, you can run larger batches, which amortizes the communication overhead. We showed FSDP at 2 GPUs matching DDP at 4 GPUs in throughput — same job, half the GPU cost."
+
 ### compare_runs.py — auto-calculates everything after runs complete
 
 After each stage, run `python compare_runs.py` on the pod (MLflow server must be running). Reads all runs from MLflow and prints two tables:

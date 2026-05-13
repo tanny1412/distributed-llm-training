@@ -77,12 +77,18 @@ story.append(Paragraph("Stage 3 — FSDP (4 GPUs, no gradient checkpointing)", h
 story.append(Paragraph("Goal: show memory savings from sharding. Compare peak memory to DDP.", body_style))
 story.append(Spacer(1, 6))
 story.append(stage_table([
-    ["Command", "torchrun --nproc_per_node=4 train_fsdp.py"],
+    ["Commands", "torchrun --nproc_per_node=4 train_fsdp.py  (batch=4)\n"
+                 "torchrun --nproc_per_node=4 train_fsdp.py  (batch=16)\n"
+                 "torchrun --nproc_per_node=2 train_fsdp.py  (batch=16)"],
     ["Gradient checkpointing", "OFF — sharding alone should be enough on A100 80GB"],
     ["Metrics logged", "samples_per_sec · peak_memory_mb · steady_memory_mb"],
     ["Memory expectation", "Peak per rank dramatically lower than DDP\nFSDP shards weights + gradients + optimizer states across 4 GPUs"],
-    ["Throughput cost", "AllGather + ReduceScatter every layer vs DDP's single AllReduce\nbut larger batch now possible → can recover throughput"],
-    ["Key insight", "DDP = throughput tool. FSDP = throughput + memory tool.\nGradient checkpointing only needed if FSDP sharding alone doesn't fit."],
+    ["Throughput story", "FSDP 4GPU batch=4   → lower than DDP (communication overhead)\n"
+                         "FSDP 4GPU batch=16  → back to ~DDP level (bigger batch amortizes cost)\n"
+                         "FSDP 2GPU batch=16  → can 2 GPUs match DDP 4 GPU throughput?"],
+    ["Key insight", "DDP is memory-constrained on batch size.\n"
+                    "FSDP frees memory → bigger batch → recovers throughput lost to communication.\n"
+                    "FSDP 2 GPUs ≈ DDP 4 GPUs in throughput = same job, half the GPU cost."],
 ]))
 
 # Stage 4
@@ -100,14 +106,17 @@ story.append(stage_table([
 # Summary table
 story.append(Paragraph("Expected Results Summary", h2_style))
 summary = [
-    ["Stage", "GPUs", "Peak Mem/rank", "Throughput", "Key finding"],
-    ["Single GPU (ckpt ON)", "1", "TBD", "4.61 s/s", "Baseline"],
-    ["Single GPU (ckpt OFF)", "1", "TBD", "5.45 s/s", "peak diff = activation cost"],
-    ["DDP", "1/2/4", "~same as single", "TBD", "scaling efficiency"],
-    ["FSDP", "4", "TBD (much lower)", "TBD", "memory savings from sharding"],
-    ["Ray Train", "4", "~same as DDP", "TBD", "setup simplicity"],
+    ["Stage", "GPUs", "Batch", "Peak Mem/rank", "Throughput", "Key finding"],
+    ["Single GPU (ckpt ON)", "1", "4", "TBD", "4.61 s/s", "Baseline"],
+    ["Single GPU (ckpt OFF)", "1", "4", "TBD", "5.45 s/s", "peak diff = activation cost"],
+    ["DDP", "2", "4", "~same as single", "TBD", "scaling efficiency at 2 GPUs"],
+    ["DDP", "4", "4", "~same as single", "TBD", "scaling efficiency at 4 GPUs"],
+    ["FSDP", "4", "4", "TBD (much lower)", "TBD", "apples-to-apples vs DDP"],
+    ["FSDP", "4", "16", "TBD (much lower)", "TBD", "recover throughput with freed memory"],
+    ["FSDP", "2", "16", "TBD (much lower)", "TBD", "2 GPUs ≈ DDP 4 GPUs?"],
+    ["Ray Train", "4", "4", "~same as DDP", "TBD", "setup simplicity vs torchrun"],
 ]
-t = Table(summary, colWidths=[3.8*cm, 1.8*cm, 3.2*cm, 2.5*cm, 5.2*cm])
+t = Table(summary, colWidths=[3.5*cm, 1.5*cm, 1.5*cm, 2.8*cm, 2.5*cm, 4.7*cm])
 t.setStyle(TableStyle([
     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
     ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
